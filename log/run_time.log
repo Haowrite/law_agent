@@ -1,0 +1,4 @@
+2026-02-05 17:57:00 | INFO     | app_logger.py:79 | wrapper | [知识库向量化] 开始执行
+2026-02-05 17:57:11 | INFO     | app_logger.py:86 | wrapper | [知识库向量化] 执行完成，耗时: 11.30秒
+2026-02-05 17:57:25 | INFO     | app_logger.py:79 | wrapper | [分类节点] 开始执行
+2026-02-05 17:57:25 | INFO     | app_logger.py:86 | wrapper | [分类节点] 执行完成，耗时: 0.00秒
