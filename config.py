@@ -33,7 +33,7 @@ VERSION = "1.0.0"
 #本地知识库路径
 BASE_PATH = os.getenv("__BASE_PATH", "")
 FILE_PATH = os.getenv("__FILE_PATH", "")  # 本地知识库路径
-VECTOR_COLLECTION_NAME = os.getenv("vector_collection", "")  # 向量集合名
+VECTOR_COLLECTION_NAME = os.getenv("VECTOR_COLLECTION_NAME", "")  # 向量表名
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "")  #嵌入模型
-EMBED_DIM = int(os.getenv("EMBED_DIM", ""))     #嵌入维度
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", ""))     #嵌入维度
 RE_BUILD = os.getenv("RE_BUILD", 'False') == 'True'  #是否重建向量库

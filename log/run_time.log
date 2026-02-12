@@ -1,1 +1,2 @@
-2026-02-10 00:52:04 | INFO     | app_logger.py:95 | sync_wrapper | [知识库向量化] 执行完成，耗时: 4404.98秒
+2026-02-12 14:42:19 | INFO     | app_logger.py:95 | sync_wrapper | [知识库向量化] 执行完成，耗时: 29.97秒
+2026-02-12 15:24:15 | INFO     | app_logger.py:95 | sync_wrapper | [知识库向量化] 执行完成，耗时: 8.46秒

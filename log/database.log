@@ -1,1 +1,24 @@
-2026-02-10 00:52:04 | ERROR    | vector_doc.py:219 | create_vector_store | ❌ 知识库构建失败: CUDA out of memory. Tried to allocate 9.88 GiB. GPU 0 has a total capacity of 8.00 GiB of which 0 bytes is free. Including non-PyTorch memory, this process has 17179869184.00 GiB memory in use. Of the allocated memory 13.32 GiB is allocated by PyTorch, and 190.97 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+2026-02-12 14:41:46 | INFO     | base.py:11 | get_async_engine | 异步数据库引擎创建成功: mysql+asyncmy://root:02crhstc@localhost:3306/agent_project
+2026-02-12 14:41:49 | INFO     | vector_doc.py:197 | create_vector_store | ==================================================
+2026-02-12 14:41:49 | INFO     | vector_doc.py:198 | create_vector_store | 🚀 开始构建法规条文知识库，路径: /home/RAG_agent/files/laws_docs | re_build=False
+2026-02-12 14:41:49 | INFO     | vector_doc.py:199 | create_vector_store | ==================================================
+2026-02-12 14:42:09 | INFO     | vector_doc.py:233 | create_vector_store | → 未启用重建，尝试从 Milvus 加载现有文档用于 BM25...
+2026-02-12 14:42:09 | INFO     | vector_doc.py:283 | load_all_documents_from_milvus | → 开始从 Milvus 集合 'no_sft_laws_vector' 全量加载文档...
+2026-02-12 14:42:19 | ERROR    | vector_doc.py:248 | create_vector_store | ⚠️ 从 Milvus 加载文档失败: <MilvusException: (code=2, message=Fail connecting to server on localhost:19530, illegal connection params or server unavailable)>
+2026-02-12 14:42:19 | ERROR    | vector_doc.py:267 | create_vector_store | ❌ 知识库构建失败: 500: 未重建且无法从向量库加载文档，请先运行 re_build=True
+2026-02-12 15:22:15 | INFO     | base.py:11 | get_async_engine | 异步数据库引擎创建成功: mysql+asyncmy://root:02crhstc@localhost:3306/agent_project
+2026-02-12 15:24:04 | INFO     | base.py:11 | get_async_engine | 异步数据库引擎创建成功: mysql+asyncmy://root:02crhstc@localhost:3306/agent_project
+2026-02-12 15:24:07 | INFO     | vector_doc.py:197 | create_vector_store | ==================================================
+2026-02-12 15:24:07 | INFO     | vector_doc.py:198 | create_vector_store | 🚀 开始构建法规条文知识库，路径: /home/RAG_agent/files/laws_docs | re_build=False
+2026-02-12 15:24:07 | INFO     | vector_doc.py:199 | create_vector_store | ==================================================
+2026-02-12 15:24:15 | INFO     | vector_doc.py:236 | create_vector_store | → 未启用重建，尝试从 Milvus 加载现有文档用于 BM25...
+2026-02-12 15:24:15 | INFO     | vector_doc.py:285 | load_all_documents_from_milvus | → 开始从 Milvus 集合 'no_sft_laws_vector' 全量加载文档...
+2026-02-12 15:24:15 | ERROR    | vector_doc.py:251 | create_vector_store | ⚠️ 从 Milvus 加载文档失败: <ConnectionNotExistException: (code=1, message=should create connection first.)>
+2026-02-12 15:24:15 | ERROR    | vector_doc.py:270 | create_vector_store | ❌ 知识库构建失败: 500: 未重建且无法从向量库加载文档，请先运行 re_build=True
+2026-02-12 15:55:30 | INFO     | base.py:11 | get_async_engine | 异步数据库引擎创建成功: mysql+asyncmy://root:02crhstc@localhost:3306/agent_project
+2026-02-12 15:55:33 | INFO     | vector_doc.py:193 | create_vector_store | ==================================================
+2026-02-12 15:55:33 | INFO     | vector_doc.py:194 | create_vector_store | 🚀 开始构建法规条文知识库，路径: /home/RAG_agent/files/laws_docs | re_build=True
+2026-02-12 15:55:33 | INFO     | vector_doc.py:195 | create_vector_store | ==================================================
+2026-02-12 15:55:48 | INFO     | vector_doc.py:150 | load_documents | ✓ 成功加载并清洗 923 个文档（含 .md / .txt / .docx）
+2026-02-12 15:56:00 | INFO     | vector_doc.py:186 | split_documents | ✓ 条文切分完成 | 共提取 50756 条/子条法规条文
+2026-02-12 15:56:10 | INFO     | vector_doc.py:227 | create_vector_store | → 正在生成向量...
