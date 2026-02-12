@@ -1,14 +1,1 @@
-2026-02-05 17:56:49 | INFO     | base.py:11 | get_async_engine | 异步数据库引擎创建成功: mysql+asyncmy://root:02crhstc@localhost:3306/agent_project
-2026-02-05 17:57:00 | INFO     | vector_doc.py:163 | create_vector_store | ==================================================
-2026-02-05 17:57:00 | INFO     | vector_doc.py:164 | create_vector_store | 🚀 开始构建纯Markdown知识库, 知识库路径/home/RAG_agent/files/test_file
-2026-02-05 17:57:00 | INFO     | vector_doc.py:165 | create_vector_store | ==================================================
-2026-02-05 17:57:11 | INFO     | vector_doc.py:84 | load_documents | ✓ 成功加载并清洗 1 个Markdown文档
-2026-02-05 17:57:11 | DEBUG    | vector_doc.py:125 | split_documents | 标题分割后块数: 13
-2026-02-05 17:57:11 | INFO     | vector_doc.py:154 | split_documents | ✓ 切分完成 | 原始文档: 1 | 标题块: 13 | 最终chunks: 37 (size=700, overlap=100)
-2026-02-05 17:57:11 | INFO     | vector_doc.py:202 | create_vector_store | ✓ 检索器初始化完成 (BM25 k=5 | 向量 k=5 MMR)
-2026-02-05 17:57:11 | INFO     | vector_doc.py:203 | create_vector_store | ==================================================
-2026-02-05 17:57:11 | INFO     | vector_doc.py:204 | create_vector_store | 📊 最终索引: 37 个语义块 | 平均块大小: 542 字符
-2026-02-05 17:57:11 | INFO     | vector_doc.py:205 | create_vector_store | ==================================================
-
-2026-02-05 17:57:11 | INFO     | vector_doc.py:207 | create_vector_store | ⚠️由于没有重建知识库，知识库内容可能与实际文档有差异，请检查~
-2026-02-05 17:57:12 | INFO     | base.py:25 | init_db | 数据库表初始化完成
+2026-02-10 00:52:04 | ERROR    | vector_doc.py:219 | create_vector_store | ❌ 知识库构建失败: CUDA out of memory. Tried to allocate 9.88 GiB. GPU 0 has a total capacity of 8.00 GiB of which 0 bytes is free. Including non-PyTorch memory, this process has 17179869184.00 GiB memory in use. Of the allocated memory 13.32 GiB is allocated by PyTorch, and 190.97 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)

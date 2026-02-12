@@ -1,32 +1,27 @@
 """
-集中式客服系统
+法律AI助手
 使用单一智能体处理用户询问并执行RAG检索
 """
-from json import tool
-from langgraph.types import Command
-from langchain_core.messages import HumanMessage, AIMessage
+from re import A
+from langchain_core.messages import HumanMessage
 from langgraph.graph import StateGraph
 
 from agents.base_agent import AgentState
-from app_logger import app_logger as logger, timer
+from app_logger import llm_logger as logger, timer
 from RAG.vector_doc import create_vector_store
 # 导入配置
 from config import *
 # 导入智能体和工具
 from agents import GeneralAgent
-from tools.retrieve import retrieve_vector_store
 from tools.base import tool_dict
 from model.get_model import get_llm
-from config import MODEL, SUMMARY_MODEL, TEMPERATURE, FILE_PATH, RE_BUILD
-from agents.base_agent import summary_memory_mananger
+from config import MODEL,  TEMPERATURE, FILE_PATH, RE_BUILD
 
 
 # 建立本地知识库
 create_vector_store(file_path=FILE_PATH, re_build=RE_BUILD)
 
 main_llm = get_llm(MODEL, TEMPERATURE)
-summary_llm = get_llm(SUMMARY_MODEL, TEMPERATURE)
-memory_summary = summary_memory_mananger(summary_llm)
 
 # 初始化智能体
 def initialize_agents():
@@ -37,32 +32,35 @@ def initialize_agents():
 
     # 为每个智能体设置LLM和会话管理器
     for name, agent in agents.items():
-        agent.set_llm(main_llm)  # 延迟获取LLM
-        agent.set_summary_manager(memory_summary)
-
+        agent.set_llm(main_llm)  
     return agents
 
 
 @timer("分类节点")
 def router_edge_node(state: AgentState):
-    ai_message = state["messages"][-1]
-    if isinstance(ai_message, AIMessage):
-        if ai_message.tool_calls is not None and len(ai_message.tool_calls) > 0:
-            return 'tool_call_node'
-    return 'final_response_node'
+    ai_action = state['ai_actions'][-1]
+    if not ai_action.enable_answer and ai_action.search_query != "":
+        return 'tool_call_node'
+    elif ai_action.enable_answer and ai_action.response != "":
+        return 'final_response_node'
+    else:
+        state['ai_actions'][-1].response = "无法解决您的问题。建议您详细描述具体法律场景、涉及的主体或相关法条，以便我们更好地帮助您。"
+        return 'final_response_node'
 
+
+
+@timer("RAG检索节点")
 # RAG检索节点
-@timer("工具调用节点")
-async def tool_call_node(state: AgentState):
-    """执行RAG检索并将结果存储到state中"""
-    ai_message = state['messages'][-1]
+def tool_call_node(state: AgentState):
+    """执行RAG检索并将结果存储到state中，目前只有检索工具，如果后期添加多个工具，修改agent的返回json格式，system_prompt添加详细的工具调用的json结构"""
+    ai_action = state['ai_actions'][-1]
+    
+    logger.info(f"🔍 执行RAG检索... 用户问题：{state['customer_query']} |  检索问题关键字: {ai_action.search_query}")
 
-    tool_message_list = []
-    for tool_call in ai_message.tool_calls:
-        tool_res = await tool_dict[tool_call['name']].ainvoke(tool_call['args'])
-        tool_message_list.append(tool_res)
+    rag_res = tool_dict['retrieve_vector_store'].invoke(ai_action.search_query)
 
-    return {'tool_result': tool_message_list}
+    logger.info(f"🔍 检索到的内容：{rag_res}")
+    return {'rag_result': [rag_res], 'rag_cnt': 1}
 
 
 # 最终响应节点
@@ -71,11 +69,12 @@ def final_response_node(state: AgentState):
     """最终响应节点，保存会话信息"""
     # 添加AI消息到数据库
     try:
-        state['response'] = state['messages'][-1].content
+        state['response'] = state['ai_actions'][-1].response
     except Exception as e:
         logger.info(f"Error adding message to session: {e}")
-
-    return {}
+    
+    logger.info(f"💬 最终响应：{state['response']}")
+    return {'response': state['ai_actions'][-1].response}
 
 
 
@@ -88,7 +87,7 @@ def make_graph():
 
     # 添加节点
     workflow.add_node("general_agent", agents_list["general_agent"].process)
-    workflow.add_node("final_response", final_response_node)
+    workflow.add_node("final_response_node", final_response_node)
     workflow.add_node("tool_call_node", tool_call_node)
 
     
@@ -96,11 +95,11 @@ def make_graph():
     workflow.set_entry_point("general_agent")
     workflow.add_conditional_edges("general_agent", router_edge_node)
     workflow.add_edge("tool_call_node", "general_agent")
-    workflow.set_finish_point("final_response")
+    workflow.set_finish_point("final_response_node")
 
     # 编译工作流
     app = workflow.compile()
-    logger.info("✅ 集中式客服系统工作流图构建完成")
+    logger.info("✅ 法律AI助手构建完成")
     return app
 
 

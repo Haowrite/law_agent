@@ -1,46 +1,50 @@
 import time
-from langchain_community.document_loaders import DirectoryLoader, TextLoader
+import os
+import re
+import token
+import uuid
+from typing import Optional, List
+
+from langchain_community.document_loaders import DirectoryLoader, TextLoader, Docx2txtLoader
 from langchain_community.retrievers import BM25Retriever
-from langchain_text_splitters import (
-    RecursiveCharacterTextSplitter,
-    MarkdownHeaderTextSplitter
-)
 from langchain_core.documents import Document
 from langchain_core.vectorstores.base import VectorStoreRetriever
 from langchain_core.vectorstores import VectorStore
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
 from app_logger import database_logger as logger
-import unicodedata
-from fastapi import HTTPException
-from RAG.base import *
-from typing import Optional, List
-import uuid
-import re
 from app_logger import timer
+from RAG.base import milvus_vector_store  # 确保导入正确
+from fastapi import HTTPException
+import unicodedata
+from db_crud.base_func import count_tokens
+import torch
+from tqdm import tqdm
+
 class VectorManager:
     vector_store: VectorStore = None
-    ids = None
     vector_retriever: Optional[VectorStoreRetriever] = None
     bm25_retriever: Optional[BM25Retriever] = None
 
-def clean_markdown_text(text: str) -> str:
+
+def clean_legal_text(text: str) -> str:
     """
-    Markdown专用清洗（无代码块场景）：
-    - 移除HTML注释（如 <!-- FORCE BREAK -->）
-    - 保留标题/列表结构空格
-    - 仅压缩行内冗余空格，保留段落换行
-    - 标准化标点提升检索匹配率
+    通用法律/行政法规文本清洗（适用于 .txt / .md / .docx 提取的纯文本）：
+    - 移除 HTML 注释（如 <!-- ... -->）
+    - 全角字符标准化（含全角空格 → 半角）
+    - 中文标点 → 英文标点（提升检索一致性）
+    - 压缩行内冗余空格，保留段落结构（用 \n\n 分隔）
     """
     if not text or not text.strip():
         return text
-    
-    # 1. 移除所有 HTML 注释（包括跨行注释）
-    # 匹配 <!-- 任意内容 -->，支持跨行（re.DOTALL）
+
+    # 1. 移除 HTML 注释（包括跨行）
     text = re.sub(r'<!--.*?-->', '', text, flags=re.DOTALL)
-    
-    # 2. 全角字符标准化（含全角空格→半角空格）
+
+    # 2. 全角转半角（NFKC 标准化）
     normalized = unicodedata.normalize('NFKC', text)
-    
-    # 3. 中文标点→英文标点（避开Markdown语法符号）
+
+    # 3. 中文标点映射为英文标点（避开正则特殊字符）
     punct_map = {
         "，": ",", "。": ".", "（": "(", "）": ")", "；": ";", "：": ":",
         "！": "!", "？": "?", "“": '"', "”": '"', "‘": "'", "’": "'",
@@ -48,166 +52,231 @@ def clean_markdown_text(text: str) -> str:
     }
     for cn, en in punct_map.items():
         normalized = normalized.replace(cn, en)
-    
-    # 4. 智能空格处理：保留结构性换行，压缩行内冗余空格
+
+    # 4. 智能空格处理：压缩行内空格，保留非空行（段落）
     lines = []
     for line in normalized.splitlines():
         cleaned_line = re.sub(r'[ \t]+', ' ', line).strip()
-        if cleaned_line:  # 跳过空行（保留非空行间的逻辑分隔）
+        if cleaned_line:
             lines.append(cleaned_line)
-    
-    # 用双换行保留段落结构（增强语义分割）
+
     return '\n\n'.join(lines).strip()
 
+
+def split_by_article(text: str, source_path: str) -> List[Document]:
+    """
+    将一段法规文本按“第X条”切分为多个 Document。
+    支持中文数字：一、二、十、十一、一百等。
+    """
+    pattern = r'(第[零一二三四五六七八九十百千]+条)'
+    parts = re.split(f'({pattern})', text.strip())
+
+    docs = []
+    i = 0
+    while i < len(parts):
+        if re.fullmatch(pattern, parts[i]):
+            article_num = parts[i].strip()
+            content = ""
+            i += 1
+            while i < len(parts) and not re.fullmatch(pattern, parts[i]):
+                content += parts[i]
+                i += 1
+            content = content.strip()
+            if content:
+                # 去掉文件后缀名（如 .md / .docx / .txt）
+                basename = os.path.basename(source_path)
+                filename_without_ext = os.path.splitext(basename)[0]
+
+                docs.append(
+                    Document(
+                        page_content=content,
+                        metadata={
+                            "filename": filename_without_ext,  # ← 无后缀
+                            "article": article_num,
+                            "source": source_path,
+                        }
+                    )
+                )
+        else:
+            i += 1
+    return docs
+
+
 def load_documents(source_dir: str) -> List[Document]:
-    """加载并清洗Markdown文档（无代码块优化版）"""
+    """加载并清洗多种格式文档（.md, .txt, .docx）"""
     try:
-        loader = DirectoryLoader(
+        # 合并多个 loader：TextLoader 处理 .md/.txt，Docx2txtLoader 处理 .docx
+        docs = []
+
+        # 加载 .md 和 .txt
+        text_loader = DirectoryLoader(
             path=source_dir,
-            glob=["**/*.md"],
+            glob=["**/*.md", "**/*.txt"],
             loader_cls=TextLoader,
             loader_kwargs={"autodetect_encoding": True},
             show_progress=True,
         )
-        docs = loader.load()
-        
-        # 清洗内容 + 标记元数据
+        docs.extend(text_loader.load())
+
+        # 加载 .docx
+        docx_loader = DirectoryLoader(
+            path=source_dir,
+            glob=["**/*.docx"],
+            loader_cls=Docx2txtLoader,
+            show_progress=True,
+        )
+        docs.extend(docx_loader.load())
+
+        # 清洗内容 + 更新元数据
         for doc in docs:
             original_len = len(doc.page_content)
-            doc.page_content = clean_markdown_text(doc.page_content)
+            doc.page_content = clean_legal_text(doc.page_content)
+            basename = os.path.basename(doc.metadata["source"])
+            filename_without_ext = os.path.splitext(basename)[0]
+
             doc.metadata.update({
                 "source_cleaned": True,
                 "original_length": original_len,
                 "cleaned_length": len(doc.page_content),
+                "filename": filename_without_ext,  
             })
-        
-        logger.info(f"✓ 成功加载并清洗 {len(docs)} 个Markdown文档")
+
+        logger.info(f"✓ 成功加载并清洗 {len(docs)} 个文档（含 .md / .txt / .docx）")
         return docs
+
     except Exception as e:
         logger.error(f"文档加载失败: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"文档加载失败: {str(e)}")
 
-def split_documents(documents: List[Document], chunk_size: int = 700, chunk_overlap: int = 100) -> List[Document]:
+
+def split_documents(documents: List[Document]) -> List[Document]:
     """
-    两阶段Markdown感知切分（无代码块优化）：
-    1. 按标题结构分割（保留层级语义）
-    2. 递归切分时优先保留列表/段落完整性
+    按“第X条”切分每篇文档，每条作为一个独立 chunk；
+    若某条超过 1000 tokens，则进一步用 RecursiveCharacterTextSplitter 切分为 ≤1000 tokens 的子块。
     """
-    # 阶段1: 按标题分割（保留标题文本在内容中）
-    headers_to_split_on = [
-        ("#", "header_1"),
-        ("##", "header_2"),
-        ("###", "header_3"),
-        ("####", "header_4"),
-    ]
-    markdown_splitter = MarkdownHeaderTextSplitter(
-        headers_to_split_on=headers_to_split_on,
-        strip_headers=False
-    )
-    
-    header_splits = []
-    for doc in documents:
-        splits = markdown_splitter.split_text(doc.page_content)
-        for split in splits:
-            # 合并原始元数据（source等）
-            split.metadata.update({
-                k: v for k, v in doc.metadata.items() 
-                if k not in split.metadata and k != "source_cleaned"
-            })
-            # 构建标题路径（用于检索上下文增强）
-            header_path = " > ".join([
-                split.metadata[h] for h in ["header_1", "header_2", "header_3", "header_4"] 
-                if h in split.metadata and split.metadata[h]
-            ])
-            split.metadata["header_path"] = header_path or "文档根目录"
-        header_splits.extend(splits)
-    
-    logger.debug(f"标题分割后块数: {len(header_splits)}")
-    
-    # 阶段2: 递归切分（优化分隔符适配Markdown结构）
+    all_article_docs = []
     text_splitter = RecursiveCharacterTextSplitter(
-        separators=[
-            "\n\n",               # 段落分隔（最高优先级）
-            "\n- ", "\n* ",       # 无序列表项
-            "\n1. ", "\n2. ", "\n3. ", "\n4. ", "\n5. ", "\n6. ", "\n7. ", "\n8. ", "\n9. ", "\n10. ",  # 有序列表（覆盖常见）
-            "\n",                 # 换行
-            "。", "！", "？", "；", # 中文句尾
-            ". ", "! ", "? ",     # 英文句尾
-            " ", ""               # 最小单位
-        ],
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-        length_function=len,
-        add_start_index=True,
+        chunk_size=1000,
+        chunk_overlap=50,
+        length_function=count_tokens,  # 使用你已有的 count_tokens 函数
+        separators=["\n\n", "\n", "。", "；", "，", " ", ""]
     )
-    
-    split_docs = text_splitter.split_documents(header_splits)
-    
-    # 添加唯一ID与统计元数据
-    for doc in split_docs:
-        doc.id = str(uuid.uuid4())
-        doc.metadata["chunk_size"] = len(doc.page_content)
-        # 精简元数据：移除临时字段
-        doc.metadata.pop("original_length", None)
-        doc.metadata.pop("cleaned_length", None)
-    
-    logger.info(
-        f"✓ 切分完成 | 原始文档: {len(documents)} | 标题块: {len(header_splits)} | "
-        f"最终chunks: {len(split_docs)} (size={chunk_size}, overlap={chunk_overlap})"
-    )
-    return split_docs
+
+    for doc in documents:
+        article_docs = split_by_article(
+            text=doc.page_content,
+            source_path=doc.metadata["source"]
+        )
+        for art_doc in article_docs:
+            token_num = count_tokens(art_doc.page_content)
+            if token_num <= 1000:
+                # 不需要再切分
+                all_article_docs.append(art_doc)
+            else:
+                # 超长，进行二次切分
+                sub_docs = text_splitter.split_documents([art_doc])
+                # 保留原始 article 和 filename，但添加子序号（可选）
+                for i, sub_doc in enumerate(sub_docs):
+                    sub_doc.metadata.update({
+                        "article": f"{art_doc.metadata['article']}_part{i+1}",
+                        "filename": art_doc.metadata["filename"],
+                        "source": art_doc.metadata["source"],
+                    })
+                all_article_docs.extend(sub_docs)
+
+    logger.info(f"✓ 条文切分完成 | 共提取 {len(all_article_docs)} 条/子条法规条文")
+    return all_article_docs
+
+
 @timer('知识库向量化')
 def create_vector_store(file_path: Optional[str] = None, re_build: bool = False):
-
     try:
-        logger.info("="*50)
-        logger.info(f"🚀 开始构建纯Markdown知识库, 知识库路径{file_path}")
-        logger.info("="*50)
-
+        logger.info("=" * 50)
+        logger.info(f"🚀 开始构建法规条文知识库，路径: {file_path} | re_build={re_build}")
+        logger.info("=" * 50)
 
         VectorManager.vector_store = milvus_vector_store()
 
-        # 1. 加载与清洗
-        docs = load_documents(file_path)
-        
-        # 2. 智能切分（参数针对中文技术文档优化）
-        split_docs = split_documents(docs, chunk_size=700, chunk_overlap=100)
-        
-        ids=[doc.id for doc in split_docs]
-
         if re_build:
+            # === 重建模式：从原始文件加载并写入向量库 ===
+            docs = load_documents(file_path)
+            split_docs = split_documents(docs)
+
+            for doc in split_docs:
+                doc.metadata["id"] = str(uuid.uuid4())
+                doc.metadata["token_num"] = count_tokens(doc.page_content)
+
+            ids = [doc.metadata["id"] for doc in split_docs]
+            max_size = max(d.metadata['token_num'] for d in split_docs)
+            avg_size = sum(d.metadata['token_num'] for d in split_docs) // len(split_docs)
+            logger.info(f"→ 最长文本 {max_size} tokens")
+
             VectorManager.vector_store.drop()
-            # 3. 向量化存储
-            logger.info("→ 需要构建向量索引，正在构建向量索引...")
+            logger.info("→ 正在重建向量索引...")
             start_vec = time.time()
-            ids = VectorManager.vector_store.add_documents(
-                split_docs, 
-                ids=ids,
-            )
-            VectorManager.ids = ids
+            batch_size = 50
+            for i in tqdm(range(0, len(split_docs), batch_size), desc="向量化中"):
+                batch = split_docs[i:i + batch_size]
+                VectorManager.vector_store.add_documents(batch, ids=ids[i:i + batch_size])
+                torch.cuda.empty_cache()
+
             vec_time = time.time() - start_vec
-            logger.info(f"✓ 向量化完成 ({len(ids)} chunks, 耗时 {vec_time:.2f}s)")
+            logger.info(f"✓ 向量化完成 ({len(ids)} 条，耗时 {vec_time:.2f}s)")
+
+            final_docs = split_docs  # 用于后续构建 BM25
+
         else:
-            VectorManager.ids = ids
+            # === 非重建模式：直接从 Milvus 读取已有文档 ===
+            logger.info("→ 未启用重建，尝试从 Milvus 加载现有文档用于 BM25...")
+            try:
+                
+                dummy_vector = [0.0] * 1024
 
+                # 查询最多 100,000 条
+                all_docs = VectorManager.vector_store.similarity_search_by_vector(
+                    embedding=dummy_vector,
+                    k=100000  # 足够大的数
+                )
 
-        # 4. 构建混合检索器（增强检索质量）
-        VectorManager.bm25_retriever = BM25Retriever.from_documents(split_docs)
+                if not all_docs:
+                    raise ValueError("从 Milvus 未检索到任何文档，请确认是否已建库")
+
+                final_docs = all_docs
+                ids = [doc.metadata.get("id", "unknown") for doc in final_docs]
+                max_size = max(d.metadata['token_num'] for d in final_docs)
+                avg_size = sum(d.metadata['token_num'] for d in final_docs) // len(final_docs)
+
+                logger.info(f"✓ 从 Milvus 成功加载 {len(final_docs)} 条文档用于 BM25")
+
+            except Exception as e:
+                logger.error(f"⚠️ 从 Milvus 加载文档失败: {e}，回退到重建模式？")
+                raise HTTPException(
+                    status_code=500,
+                    detail="未重建且无法从向量库加载文档，请先运行 re_build=True"
+                )
+
+        # === 无论是否重建，都用 final_docs 构建混合检索器 ===
+        VectorManager.bm25_retriever = BM25Retriever.from_documents(final_docs)
         VectorManager.bm25_retriever.k = 10
-        # 使用MMR提升结果多样性，fetch_k增大候选集
         VectorManager.vector_retriever = VectorManager.vector_store.as_retriever(
             search_kwargs={'k': 10}
         )
 
-        logger.info("✓ 检索器初始化完成 (BM25 k=5 | 向量 k=5 MMR)")
-        logger.info("="*50)
-        logger.info(f"📊 最终索引: {len(ids)} 个语义块 | 平均块大小: {sum(d.metadata['chunk_size'] for d in split_docs)//len(split_docs)} 字符")
-        logger.info("="*50 + "\n")
+        logger.info(f"📊 最终索引: {len(final_docs)} 条 | 平均token长度: {avg_size} | 最大token长度: {max_size}")
+        logger.info("=" * 50)
         if not re_build:
-            logger.info("⚠️由于没有重建知识库，知识库内容可能与实际文档有差异，请检查~")
-        
+            logger.info("✅ 已从现有向量库加载文档，BM25 初始化完成")
+
     except Exception as e:
         logger.error(f"❌ 知识库构建失败: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"知识库构建失败: {str(e)}")
-    
+                                                                                          
 
+#分割后的 Document 元数据实例：
+#     {                                                                      
+#   "filename": "安全生产许可证条例",    
+#   "article": "第一条",
+#   "source": "/data/法规/安全生产许可证条例.md",
+#   "token_num": 98,
+#   "id": "a1b2c3d4-..."
+# }

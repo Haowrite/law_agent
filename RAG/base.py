@@ -20,7 +20,8 @@ COLLECTION_NAME = VECTOR_COLLECTION_NAME
 
 def embeddings_model():
     embeddings = HuggingFaceEmbeddings(model = EMBEDDING_MODEL,
-                                        encode_kwargs = {"normalize_embeddings": True}
+                                        encode_kwargs = {"normalize_embeddings": True,
+                                                         "batch_size": 8}
                                        )
     return embeddings
 

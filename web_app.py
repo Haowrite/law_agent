@@ -7,8 +7,6 @@
 """
 
 import os
-os.environ['MODELSCOPE_CACHE'] = "F:/m_code/llm_project/Fine-tune/hf_hub"
-os.environ['HF_HOME'] = "F:/m_code/llm_project/Fine-tune/hf_hub"
 
 import time
 from typing import Dict, List, Optional
@@ -21,7 +19,7 @@ from contextlib import asynccontextmanager
 
 from langchain_core.messages import HumanMessage
 from app_logger import app_logger as logger
-
+from db_crud.base_func import get_time
 from db_crud.user_crud import create_user, authenticate_user, get_user_by_id
 from db_crud.chat_memory_crud import (
     AsyncMySQLChatHistory,
@@ -31,6 +29,7 @@ from db_crud.chat_memory_crud import (
     delete_chat_session
 )
 from db_crud.base import init_db  # 异步建表函数
+from db_crud.session_manage import m_conversation_manager
 
 # 智能体
 from agent_service import make_graph
@@ -48,11 +47,7 @@ AGENT = make_graph()
 def extract_ai_response(session_state: dict) -> str:
     """从智能体状态中提取AI回复"""
     try:
-        if "response" in session_state and session_state["response"]:
-            return session_state["response"]
-        if "messages" in session_state and session_state["messages"]:
-            return session_state["messages"][-1].content
-        return "抱歉，我无法理解您的问题。"
+        return session_state["response"]
     except Exception as e:
         logger.error(f"提取AI回复失败: {e}")
         return "抱歉，处理您的请求时出现了错误。"
@@ -165,17 +160,16 @@ async def chat(req: ChatRequest, user_id: str = Query(...)):
     if len(req.message.strip()) > 2000:
         raise HTTPException(status_code=400, detail="消息长度不能超过2000字符")
     
+    user_timestamp = get_time()
+    
     # 校验会话归属
     try:
         await get_session_detail(req.session_id, user_id=user_id)
     except ValueError:
         raise HTTPException(status_code=403, detail="会话不存在或无权访问")
 
-    await AsyncMySQLChatHistory.add_message(req.session_id, req.message, "user")
-    
     session_state = await AGENT.ainvoke(
         input={
-            "messages": [HumanMessage(content=req.message)],
             "customer_query": req.message,
             "session_id": req.session_id,
             "user_id": user_id
@@ -184,7 +178,9 @@ async def chat(req: ChatRequest, user_id: str = Query(...)):
     )
 
     ai_response = extract_ai_response(session_state)
-    await AsyncMySQLChatHistory.add_message(req.session_id, ai_response, "ai")
+    m_conversation_manager.add_message_pair(req.session_id, req.message, ai_response)
+    await AsyncMySQLChatHistory.add_message(req.session_id, req.message, "user", user_timestamp)
+    await AsyncMySQLChatHistory.add_message(req.session_id, ai_response, "ai", get_time())
     return ChatResponse(response=ai_response, session_id=req.session_id)
 
 

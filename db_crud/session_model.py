@@ -20,3 +20,4 @@ class ChatMessage(SQLModel, table=True):
     content: str = Field(sa_column=sa.Column(sa.Text, nullable=False))
     timestamp: str = Field(default_factory=get_time)
     message_type: str = Field(max_length=10)
+    use_token: int = Field(default=0)

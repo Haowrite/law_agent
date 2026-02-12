@@ -8,23 +8,21 @@ from app_logger import timer
 class vector_store_args(BaseModel): 
     query: str = Field(..., description="查询的内容")
 
-@timer("知识库检索")
-@tool("retrieve_vector_store", description="根据输入的查询内容在知识库进行相关性检索, 检索出相关法律条文。知识库内容主要包括中国现行的各种法律法规等。", args_schema=vector_store_args)
-async def retrieve_vector_store(query: str):
-
+@tool("retrieve_vector_store", description="根据输入的查询内容在法律知识库进行相关性检索, 检索出相关法律条文。知识库内容主要包括中国现行的各种法律法规等。", args_schema=vector_store_args)
+def retrieve_vector_store(query: str):
     #保证本地知识库已经建立
     if VectorManager.ids is None:
         VectorManager.ids = create_vector_store()
 
-    faiss_res = await VectorManager.vector_retriever.ainvoke(input = query)
-    bm_res = await VectorManager.bm25_retriever.ainvoke(input = query)
+    faiss_res = VectorManager.vector_retriever.invoke(input = query)
+    bm_res = VectorManager.bm25_retriever.invoke(input = query)
 
     return rrf_fusion_optimized(faiss_res, bm_res)
 
 
 def rrf_fusion_optimized(faiss_results: list, bm25_results: list, k: int = 60,
                          faiss_weight: float = 0.7, bm25_weight: float = 0.3,
-                         max_results: int = 4):
+                         max_results: int = 5):
     """
     优化的RFF融合版本，性能更好
     """

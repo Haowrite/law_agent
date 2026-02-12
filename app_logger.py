@@ -1,9 +1,10 @@
+import asyncio
 from loguru import logger
 import os
 from config import LOG_DIR
 import sys
 from typing import Optional
-import functools
+from functools import wraps
 import time
 
 # 记录已配置的logger
@@ -70,21 +71,27 @@ llm_logger = setup_logger("llm")
 database_logger = setup_logger("database")
 run_time_logger = setup_logger("run_time")
 
-def timer(node_name):
-    """计时装饰器，记录节点执行时间并异步写入loguru日志"""
+def timer(name):
+    """修复的计时器装饰器，支持异步函数"""
     def decorator(func):
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            start_time = time.time()
-            run_time_logger.info(f"[{node_name}] 开始执行")
-            
-            result = func(*args, **kwargs)
-            
-            end_time = time.time()
-            execution_time = end_time - start_time
-            
-            run_time_logger.info(f"[{node_name}] 执行完成，耗时: {execution_time:.2f}秒")
-            
-            return result
-        return wrapper
+        if asyncio.iscoroutinefunction(func):
+            @wraps(func)
+            async def async_wrapper(*args, **kwargs):
+                start_time = time.time()
+                try:
+                    return await func(*args, **kwargs)
+                finally:
+                    end_time = time.time()
+                    run_time_logger.info(f"[{name}] 执行完成，耗时: {end_time - start_time:.2f}秒")
+            return async_wrapper
+        else:
+            @wraps(func)
+            def sync_wrapper(*args, **kwargs):
+                start_time = time.time()
+                try:
+                    return func(*args, **kwargs)
+                finally:
+                    end_time = time.time()
+                    run_time_logger.info(f"[{name}] 执行完成，耗时: {end_time - start_time:.2f}秒")
+            return sync_wrapper
     return decorator

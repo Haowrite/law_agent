@@ -2,6 +2,7 @@ from typing import List, Dict, Optional
 import uuid
 from datetime import datetime
 
+from ray import get
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -9,16 +10,18 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from db_crud.base import async_engine
 from db_crud.session_model import ChatSession, ChatMessage
 from db_crud.user_crud import get_user_by_id
+from db_crud.base_func import count_tokens, get_time
 from app_logger import database_logger as logger
-
 
 class AsyncMySQLChatHistory:
     @staticmethod
-    async def add_message(session_id, content: str, message_type: str) -> None:
+    async def add_message(session_id, content: str, message_type: str, time_stamp:str) -> None:
         chat_message = ChatMessage(
             session_id=session_id,
             content=content,
             message_type=message_type,
+            use_token=count_tokens(content),
+            timestamp=time_stamp
         )
         async with AsyncSession(async_engine) as session:
             session.add(chat_message)
@@ -45,7 +48,7 @@ async def create_chat_session(user_id: str) -> str:
 
 
 async def get_user_session_list(user_id: str) -> List[Dict]:
-    """获取用户所有会话摘要（含消息数）"""
+    """获取用户所有会话（含消息数）"""
     if not await get_user_by_id(user_id):
         return []
 
@@ -117,7 +120,8 @@ async def get_session_detail(session_id: str, user_id: Optional[str] = None) -> 
                 "is_user": msg.message_type == "user",
                 "content": msg.content,
                 "timestamp": msg.timestamp,
-                "role": msg.message_type
+                "role": msg.message_type,
+                "use_token": msg.use_token
             })
 
         return {
