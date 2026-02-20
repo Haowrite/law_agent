@@ -6,6 +6,7 @@
 - 路由全部异步化
 """
 
+import asyncio
 import os
 
 import time
@@ -33,7 +34,7 @@ from db_crud.chat_memory_crud import (
 )
 from db_crud.base import init_db, async_engine  # 异步建表函数
 from db_crud.session_manage import m_conversation_manager
-
+from utils.agent_thread_pool import PROCESS_POOL
 # 智能体
 from agent_service import make_graph
 
@@ -159,9 +160,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"⚠️ MySQL 引擎关闭异常: {e}")
 
-    logger.info("✅ 所有外部资源已安全释放，应用退出")
 
-# ------------------------------
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, PROCESS_POOL.shutdown, True)  # wait=True
+    logger.info("CloseOperation 进程池")
+    
+    logger.info("✅ 所有外部资源已安全释放，应用退出")
 # FastAPI 应用
 # ------------------------------
 

@@ -5,7 +5,7 @@ from RAG.base import embeddings_model
 from app_logger import database_logger as logger
 import json
 from config import  RE_BUILD, FILE_PATH
-
+import os
 _EMBEDDING_MODEL = None
 
 def get_embedding_model():
@@ -13,8 +13,6 @@ def get_embedding_model():
     if _EMBEDDING_MODEL is None:
         _EMBEDDING_MODEL = embeddings_model()
     return _EMBEDDING_MODEL
-
-
 
 def init_and_retrieve(query: str) -> str:
     """
@@ -25,7 +23,7 @@ def init_and_retrieve(query: str) -> str:
 
     # 每个子进程首次调用时初始化
     if VectorManager.vector_store is None or VectorManager.bm25_retriever is None:
-        logger.info("[子进程] 加载向量库和 BM25 索引...")
+        logger.info(f"[子进程{os.getpid()}] 加载向量库和 BM25 索引...")
         create_vector_store(m_embedding_model, file_path=FILE_PATH, re_build=RE_BUILD)
 
     # 执行嵌入
