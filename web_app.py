@@ -21,6 +21,9 @@ from langchain_core.messages import HumanMessage
 from app_logger import app_logger as logger
 from db_crud.base_func import get_time
 from db_crud.user_crud import create_user, authenticate_user, get_user_by_id
+from arq import create_pool
+from arq.connections import RedisSettings
+from db_crud.arq_tasks import REDIS_SETTINGS  # 从 tasks 导入配置
 from db_crud.chat_memory_crud import (
     AsyncMySQLChatHistory,
     create_chat_session,
@@ -28,7 +31,7 @@ from db_crud.chat_memory_crud import (
     get_session_detail,
     delete_chat_session
 )
-from db_crud.base import init_db  # 异步建表函数
+from db_crud.base import init_db, async_engine  # 异步建表函数
 from db_crud.session_manage import m_conversation_manager
 
 # 智能体
@@ -85,13 +88,78 @@ class SessionDetail(BaseModel):
 # ------------------------------
 # Lifespan：应用生命周期管理
 # ------------------------------
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("🚀 初始化数据库...")
-    await init_db()
+    """
+    应用生命周期管理：集中初始化与清理外部资源
+    - 启动顺序：DB 表 → arq 客户端（Redis 会话管理器是 lazy-init，无需显式启动）
+    - 关闭顺序：arq 客户端 → Redis 连接 → MySQL 引擎
+    """
+    logger.info("🚀 开始初始化应用依赖...")
+
+    # ------------------------------
+    # 1. 初始化数据库表（如果尚未创建）
+    # ------------------------------
+    try:
+        await init_db()
+        logger.info("✅ 数据库表初始化成功")
+    except Exception as e:
+        logger.error(f"❌ 数据库初始化失败: {e}")
+        raise
+
+    # ------------------------------
+    # 2. 创建 arq 任务提交客户端（用于 enqueue_job）
+    # ------------------------------
+    try:
+        app.state.arq_pool = await create_pool(REDIS_SETTINGS)
+        logger.info("✅ arq 任务客户端初始化成功")
+    except Exception as e:
+        logger.error(f"❌ arq 客户端初始化失败: {e}")
+        raise
+
+    # ==============================
+    # 应用运行阶段
+    # ==============================
     yield
-    logger.info("🛑 应用关闭")
+
+    # ==============================
+    # 关闭阶段（倒序释放资源）
+    # ==============================
+
+    # ------------------------------
+    # 1. 关闭 arq 提交客户端
+    # ------------------------------
+    if hasattr(app.state, 'arq_pool'):
+        try:
+            await app.state.arq_pool.close()
+            logger.info("CloseOperation arq 任务客户端")
+        except Exception as e:
+            logger.error(f"⚠️ arq 客户端关闭异常: {e}")
+
+    # ------------------------------
+    # 2. 关闭 Redis 连接（来自 m_conversation_manager）
+    # ------------------------------
+    try:
+        # 你的 ConversationManager 使用的是同步 redis-py
+        # 直接关闭底层连接池
+        if hasattr(m_conversation_manager, 'redis_client'):
+            m_conversation_manager.redis_client.close()
+            logger.info("CloseOperation Redis 会话管理器连接")
+        else:
+            logger.warning("⚠️ 未找到 Redis 客户端，跳过关闭")
+    except Exception as e:
+        logger.error(f"⚠️ Redis 连接关闭异常: {e}")
+
+    # ------------------------------
+    # 3. 关闭 MySQL 引擎
+    # ------------------------------
+    try:
+        await async_engine.dispose()
+        logger.info("CloseOperation MySQL 引擎")
+    except Exception as e:
+        logger.error(f"⚠️ MySQL 引擎关闭异常: {e}")
+
+    logger.info("✅ 所有外部资源已安全释放，应用退出")
 
 # ------------------------------
 # FastAPI 应用
@@ -105,6 +173,8 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan
 )
+
+
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
@@ -179,8 +249,27 @@ async def chat(req: ChatRequest, user_id: str = Query(...)):
 
     ai_response = extract_ai_response(session_state)
     m_conversation_manager.add_message_pair(req.session_id, req.message, ai_response)
-    await AsyncMySQLChatHistory.add_message(req.session_id, req.message, "user", user_timestamp)
-    await AsyncMySQLChatHistory.add_message(req.session_id, ai_response, "ai", get_time())
+        # ✅ 异步：提交 DB 写入任务（非阻塞！）
+    try:
+        # 提交用户消息
+        await app.state.arq_pool.enqueue_job(
+            'save_chat_message',
+            req.session_id,
+            req.message,
+            'user',
+            user_timestamp
+        )
+        # 提交 AI 消息
+        await app.state.arq_pool.enqueue_job(
+            'save_chat_message',
+            req.session_id,
+            ai_response,
+            'ai',
+            get_time()  
+        )
+    except Exception as e:
+        # 记录错误但不中断主流程（任务会进入 arq 失败队列）
+        logger.warning(f"⚠️ 提交 DB 任务失败: {e}")
     return ChatResponse(response=ai_response, session_id=req.session_id)
 
 

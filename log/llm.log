@@ -1,9 +1,0 @@
-2026-02-12 14:41:44 | INFO     | get_model.py:41 | get_tokenizer | 加载分词器: Qwen/Qwen3-0.6B
-2026-02-12 14:41:47 | INFO     | get_model.py:35 | get_llm | 加载模型: qwen3-8b
-2026-02-12 14:53:59 | INFO     | get_model.py:41 | get_tokenizer | 加载分词器: Qwen/Qwen3-0.6B
-2026-02-12 15:22:13 | INFO     | get_model.py:41 | get_tokenizer | 加载分词器: Qwen/Qwen3-0.6B
-2026-02-12 15:22:15 | INFO     | get_model.py:35 | get_llm | 加载模型: qwen3-8b
-2026-02-12 15:24:02 | INFO     | get_model.py:41 | get_tokenizer | 加载分词器: Qwen/Qwen3-0.6B
-2026-02-12 15:24:05 | INFO     | get_model.py:35 | get_llm | 加载模型: qwen3-8b
-2026-02-12 15:55:28 | INFO     | get_model.py:41 | get_tokenizer | 加载分词器: Qwen/Qwen3-0.6B
-2026-02-12 15:55:31 | INFO     | get_model.py:35 | get_llm | 加载模型: qwen3-8b

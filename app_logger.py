@@ -78,6 +78,7 @@ def timer(name):
             @wraps(func)
             async def async_wrapper(*args, **kwargs):
                 start_time = time.time()
+                run_time_logger.info(f"[{name}] 开始执行")
                 try:
                     return await func(*args, **kwargs)
                 finally:
@@ -88,6 +89,7 @@ def timer(name):
             @wraps(func)
             def sync_wrapper(*args, **kwargs):
                 start_time = time.time()
+                run_time_logger.info(f"[{name}] 开始执行")
                 try:
                     return func(*args, **kwargs)
                 finally:

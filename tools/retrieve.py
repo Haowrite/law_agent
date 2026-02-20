@@ -3,12 +3,13 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 from app_logger import timer
 import logging
-
-logger = logging.getLogger(__name__)
+from RAG.base import m_embedding_model
+from app_logger import database_logger as logger
+import asyncio
+from utils.agent_thread_pool import AGENT_EXECUTOR
 
 class vector_store_args(BaseModel): 
     query: str = Field(..., description="查询的内容")
-
 
 def ensure_vector_store_initialized():
     """确保向量库和 BM25 已加载（只在首次调用时触发）"""
@@ -16,36 +17,33 @@ def ensure_vector_store_initialized():
         logger.info("→ 首次调用，正在加载向量库和 BM25 索引...")
         # 注意：这里不传 file_path，因为我们只加载已有数据（re_build=False）
         create_vector_store(re_build=False)
-
 @tool(
     "retrieve_vector_store",
-    description="根据输入的查询内容在法律知识库进行相关性检索，检索出相关法律条文。知识库内容主要包括中国现行的各种法律法规等。",
-    args_schema=vector_store_args
+    description="根据输入的查询内容在法律知识库进行相关性检索...",
+    args_schema=vector_store_args,
 )
-def retrieve_vector_store(query: str):
-    """
-    混合检索：Milvus 向量检索 + BM25 关键词检索 → RRF 融合
-    """
-    # ✅ 确保知识库已加载
+async def retrieve_vector_store(query: str) -> str:
+    return _sync_retrieve(query)
+    # loop = asyncio.get_running_loop()
+    # return await loop.run_in_executor(AGENT_EXECUTOR, _sync_retrieve, query)
+
+def _sync_retrieve(query: str) -> str:
+    """原同步检索逻辑，移入此函数"""
+    logger.info(f"执行向量库检索， 查询内容：{query}")
     ensure_vector_store_initialized()
 
-    # === 1. 向量检索（原生 Milvus）===
-    from RAG.base import embeddings_model
-    embedder = embeddings_model()
-    query_vector = embedder.embed_query(query)
-
-    # 执行向量搜索
-    search_params = {"metric_type": "L2", "params": {}}  # FLAT 索引无需参数
+    query_vector = m_embedding_model.embed_query(query)
+    search_params = {"metric_type": "L2", "params": {}}
     results = VectorManager.vector_store.search(
         data=[query_vector],
         anns_field="vector",
         param=search_params,
-        limit=10,  # 可调整
+        limit=10,
         output_fields=["text", "metadata"]
     )
 
     faiss_results = []
-    for hit in results[0]:  # results[0] 是第一个查询的结果列表
+    for hit in results[0]:
         metadata = hit.entity.get("metadata", {})
         if isinstance(metadata, str):
             import json
@@ -59,12 +57,11 @@ def retrieve_vector_store(query: str):
         })()
         faiss_results.append(doc)
 
-    # === 2. BM25 检索（LangChain，仍可用）===
     bm25_results = VectorManager.bm25_retriever.invoke(query)
+    logger.info(f"→ 向量库 检索结果：{len(faiss_results)} 条")
+    logger.info(f"→ BM25 检索结果：{len(bm25_results)} 条")
 
-    # === 3. 融合 ===
-    fused_result = rrf_fusion_optimized(faiss_results, bm25_results)
-    return fused_result
+    return rrf_fusion_optimized(faiss_results, bm25_results)
 
 
 def rrf_fusion_optimized(
@@ -73,7 +70,7 @@ def rrf_fusion_optimized(
     k: int = 60,
     faiss_weight: float = 0.7,
     bm25_weight: float = 0.3,
-    max_results: int = 5
+    max_results: int = 10
 ):
     """
     优化的RFF融合版本，性能更好
@@ -114,5 +111,5 @@ def rrf_fusion_optimized(
     scored_docs.sort(key=lambda x: x[0], reverse=True)
 
     # 返回 top-k 条文文本，用 \n\n 分隔（更清晰）
-    contents = [doc.page_content for _, doc in scored_docs[:max_results]]
-    return "\n\n".join(contents)
+    contents = [doc.page_content + f"（法律来源：{doc.metadata.get('filename', '未知来源')+doc.metadata.get('article', '未知条目')})" for _, doc in scored_docs[:max_results]]
+    return "\n".join(contents)

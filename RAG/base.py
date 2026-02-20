@@ -13,3 +13,5 @@ def embeddings_model():
         model_name=EMBEDDING_MODEL,
         encode_kwargs={"normalize_embeddings": True, "batch_size": 8}
     )
+
+# m_embedding_model = embeddings_model()

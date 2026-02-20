@@ -4,6 +4,7 @@
 """
 
 from abc import ABC
+from re import A
 from typing import List, Any, Annotated
 from typing_extensions import TypedDict
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -29,6 +30,7 @@ class AgentState(TypedDict):
     customer_query: str = None
     response: str = None
     user_id: str = None
+    run_process: Annotated[List[tuple], operator.add] 
     
 class BaseAgent(ABC):
     def __init__(self, name: str, role: str):

@@ -2,12 +2,14 @@
 综合客服智能体
 统一处理所有类型的客户咨询
 """
+import asyncio
+from tracemalloc import start
 from typing import Dict, Any
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from langchain_core.messages import SystemMessage, AIMessage
 from .base_agent import BaseAgent
-from agents.base_agent import AgentState
 from app_logger import llm_logger as logger, timer
-
+from utils.agent_thread_pool import AGENT_EXECUTOR
+import time
 
 class GeneralAgent(BaseAgent):
     def __init__(self):
@@ -51,11 +53,11 @@ class GeneralAgent(BaseAgent):
 
 第三步：如果 retrieved_content 足够：
     enable_answer = True
-    response = 基于 retrieved_content 的准确、简洁回答，不要添加解释性语句如“根据检索结果”。
+    response = 基于 retrieved_content 的准确、完整且礼貌的回答。回答应清晰引用相关法律条文（如“根据《民法典》第九百七十三条规定……”），并以专业、友善的语气提供解释或建议（例如“您可以向其他合伙人追偿其应当承担的份额”）。不得添加 retrieved_content 中未包含的事实、解释或主观意见。
     search_query = ""
 
 第四步：如果 retrieved_content 不足（为空或无关）：
-    - 若 retrieval_count >= 5：
+    - 若 retrieval_count >= 3：
         enable_answer = True
         response = "无法解决您的问题。建议您详细描述具体法律场景、涉及的主体或相关法条，以便我们更好地帮助您。"
         search_query = ""
@@ -63,7 +65,7 @@ class GeneralAgent(BaseAgent):
         enable_answer = False
         response = ""
         search_query = user_question
-    - 若 1 <= retrieval_count < 5：
+    - 若 1 <= retrieval_count < 3：
         enable_answer = False
         response = ""
         search_query = 对 user_question 的合理改写，目标是提升法律相关性和检索效果。改写应保持原意，但可增加法律关键词、主体、行为或场景细节。
@@ -74,35 +76,42 @@ class GeneralAgent(BaseAgent):
 - 原问题：“公司不给工资怎么办？” → 改写：“用人单位拖欠劳动者工资，员工可以采取哪些法律救济措施？”
 
 当前输入信息如下：
-- 较久的聊天记录摘要：\n{summary_of_older_chat}
-- 最近的完整聊天记录历史：\n{recent_chat_history}
-- 目前调用知识库检索出的内容：\n{retrieved_content}
-- 用户当前提出的问题：\n{user_question}
-- 知识库检索次数（整数，≥0）：\n{retrieval_count}
+- 较久的聊天记录摘要：\n{summary_of_older_chat}\n
+- 最近的完整聊天记录历史：\n{recent_chat_history}\n
+- 目前调用知识库检索出的内容：\n{retrieved_content}\n
+- 知识库检索次数（整数，≥0）：\n{retrieval_count}\n
+- 用户当前提出的问题：\n{user_question}\n
 
 特殊情况：
 如果用户的问题可以从之前的回答中直接获取答案（例如用户追问了之前回答的内容），则可以直接回答，但必须确保回答内容完全基于之前的回答，不引入新的信息。
 
 请严格依据上述规则输出一个符合 general_agent_output_structure 结构的 JSON 对象，不要包含任何额外文本或说明。
 """
+
+    
     @timer('agent节点')
     async def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """处理客户的各种查询"""
-        
+        start_time = time.time()
+        # Step 1: 真异步 —— 获取上下文（不阻塞）
         summary_of_older_chat, recent_chat_history = await self.get_conversation_context(state["session_id"])
-        system_message = SystemMessage(content=self.system_prompt.format(
+
+        # Step 2: 构造 prompt（纯 CPU，很快）
+        message = self.system_prompt.format(
             summary_of_older_chat=summary_of_older_chat,
             recent_chat_history=recent_chat_history,
             retrieved_content='\n'.join(state["rag_result"]),
             user_question=state["customer_query"],
             retrieval_count=state["rag_cnt"]
-        ))
-        logger.info(f"🧑‍💼 系统提示词：{system_message.content}")
-        # 调用LLM
+        )
+
+        system_message = SystemMessage(content=message)
+
+
         try:
             response = await self.llm.ainvoke([system_message])
+            # response = await self.llm.ainvoke([system_message])
         except Exception as e:
-            logger.info(f"综合客服调用LLM时出错: {e}")
+            logger.error(f"AI 调用 LLM 时出错: {e}")
             response = AIMessage("抱歉，处理您的咨询时遇到系统错误，请稍后重试。")
 
-        return {"ai_actions": [response]}
+        return {"ai_actions": [response], 'run_process': [("agent_node", time.time() - start_time)]}

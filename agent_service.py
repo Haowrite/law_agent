@@ -7,19 +7,15 @@ from langchain_core.messages import HumanMessage
 from langgraph.graph import StateGraph
 
 from agents.base_agent import AgentState
-from app_logger import llm_logger as logger, timer
-from RAG.vector_doc import create_vector_store
+from app_logger import llm_logger as logger
 # 导入配置
 from config import *
 # 导入智能体和工具
 from agents import GeneralAgent
 from tools.base import tool_dict
 from model.get_model import get_llm
-from config import MODEL,  TEMPERATURE, FILE_PATH, RE_BUILD
-
-
-# 建立本地知识库
-create_vector_store(file_path=FILE_PATH, re_build=RE_BUILD)
+from config import MODEL,  TEMPERATURE
+import time
 
 main_llm = get_llm(MODEL, TEMPERATURE)
 
@@ -36,9 +32,12 @@ def initialize_agents():
     return agents
 
 
-@timer("分类节点")
 def router_edge_node(state: AgentState):
+
+    logger.info(f"分类节点输入, {state}")
+    start_time = time.time()
     ai_action = state['ai_actions'][-1]
+    state['run_process'].append(("router_edge_node", time.time() - start_time))
     if not ai_action.enable_answer and ai_action.search_query != "":
         return 'tool_call_node'
     elif ai_action.enable_answer and ai_action.response != "":
@@ -49,23 +48,20 @@ def router_edge_node(state: AgentState):
 
 
 
-@timer("RAG检索节点")
 # RAG检索节点
-def tool_call_node(state: AgentState):
+async def tool_call_node(state: AgentState):
     """执行RAG检索并将结果存储到state中，目前只有检索工具，如果后期添加多个工具，修改agent的返回json格式，system_prompt添加详细的工具调用的json结构"""
+    start_time = time.time()
     ai_action = state['ai_actions'][-1]
     
-    logger.info(f"🔍 执行RAG检索... 用户问题：{state['customer_query']} |  检索问题关键字: {ai_action.search_query}")
-
-    rag_res = tool_dict['retrieve_vector_store'].invoke(ai_action.search_query)
-
-    logger.info(f"🔍 检索到的内容：{rag_res}")
-    return {'rag_result': [rag_res], 'rag_cnt': 1}
+    rag_res = await tool_dict['retrieve_vector_store'].ainvoke(ai_action.search_query)
+    
+    return {'rag_result': [rag_res], 'rag_cnt': 1, 'run_process': [("rag_node", (time.time() - start_time))]}
 
 
 # 最终响应节点
-@timer("最终响应节点")
 def final_response_node(state: AgentState):
+    logger.info(f"整个聊天处理过程执行耗时：{state['run_process']}")
     """最终响应节点，保存会话信息"""
     # 添加AI消息到数据库
     try:
@@ -73,7 +69,6 @@ def final_response_node(state: AgentState):
     except Exception as e:
         logger.info(f"Error adding message to session: {e}")
     
-    logger.info(f"💬 最终响应：{state['response']}")
     return {'response': state['ai_actions'][-1].response}
 
 

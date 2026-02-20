@@ -31,9 +31,9 @@ VERSION = "1.0.0"
 
 
 #本地知识库路径
-BASE_PATH = os.getenv("__BASE_PATH", "")
 FILE_PATH = os.getenv("__FILE_PATH", "")  # 本地知识库路径
 VECTOR_COLLECTION_NAME = os.getenv("VECTOR_COLLECTION_NAME", "")  # 向量表名
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "")  #嵌入模型
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", ""))     #嵌入维度
 RE_BUILD = os.getenv("RE_BUILD", 'False') == 'True'  #是否重建向量库
+RAG_CACHE_FILE = os.getenv("RAG_CACHE_FILE", "./RAG_DB/cache.json")  #分割文档缓存路径
