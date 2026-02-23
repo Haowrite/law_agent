@@ -1,7 +1,5 @@
-import json
-import re
-from RAG.vector_doc import load_all_documents_from_milvus
 
 
 if __name__ == "__main__":
-    load_all_documents_from_milvus()
+    m = [{"text": "hello world"}, {"text": "hello ai"}, {"text": "hello python"}]
+    print('\n'.join([str(item) for item in m]))

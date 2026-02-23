@@ -56,7 +56,7 @@ async def tool_call_node(state: AgentState):
     
     rag_res = await tool_dict['retrieve_vector_store'].ainvoke(ai_action.search_query)
     
-    return {'rag_result': [rag_res], 'rag_cnt': 1, 'run_process': [("rag_node", (time.time() - start_time))]}
+    return {'rag_result': [{'search_query': ai_action.search_query, 'rag_result': rag_res}], 'rag_cnt': 1, 'run_process': [("rag_node", (time.time() - start_time))]}
 
 
 # 最终响应节点

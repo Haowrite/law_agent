@@ -6,8 +6,9 @@ from app_logger import database_logger as logger
 import json
 from config import  RE_BUILD, FILE_PATH
 import os
-_EMBEDDING_MODEL = None
 
+_EMBEDDING_MODEL = None
+_VECTORMANAGER: VectorManager = None
 def get_embedding_model():
     global _EMBEDDING_MODEL
     if _EMBEDDING_MODEL is None:
@@ -20,16 +21,17 @@ def init_and_retrieve(query: str) -> str:
     此函数必须是顶层函数，不能依赖闭包或不可序列化的对象
     """
     m_embedding_model = get_embedding_model()
-
+    global _VECTORMANAGER
     # 每个子进程首次调用时初始化
-    if VectorManager.vector_store is None or VectorManager.bm25_retriever is None:
+    if _VECTORMANAGER is None:
         logger.info(f"[子进程{os.getpid()}] 加载向量库和 BM25 索引...")
-        create_vector_store(m_embedding_model, file_path=FILE_PATH, re_build=RE_BUILD)
+        _VECTORMANAGER = VectorManager()
+        create_vector_store(m_embedding_model, vector_manager=_VECTORMANAGER, file_path=FILE_PATH, re_build=RE_BUILD)
 
     # 执行嵌入
     query_vector = m_embedding_model.embed_query(query)
     search_params = {"metric_type": "L2", "params": {}}
-    results = VectorManager.vector_store.search(
+    results = _VECTORMANAGER.vector_store.search(
         data=[query_vector],
         anns_field="vector",
         param=search_params,
@@ -51,7 +53,7 @@ def init_and_retrieve(query: str) -> str:
         })()
         faiss_results.append(doc)
 
-    bm25_results = VectorManager.bm25_retriever.invoke(query)
+    bm25_results = _VECTORMANAGER.bm25_retriever.invoke(query)
 
     return rrf_fusion_optimized(faiss_results, bm25_results)
 

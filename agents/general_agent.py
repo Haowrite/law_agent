@@ -6,6 +6,7 @@ import asyncio
 from tracemalloc import start
 from typing import Dict, Any
 from langchain_core.messages import SystemMessage, AIMessage
+from regex import R
 from .base_agent import BaseAgent
 from app_logger import llm_logger as logger, timer
 from utils.agent_thread_pool import AGENT_EXECUTOR
@@ -99,7 +100,7 @@ class GeneralAgent(BaseAgent):
         message = self.system_prompt.format(
             summary_of_older_chat=summary_of_older_chat,
             recent_chat_history=recent_chat_history,
-            retrieved_content='\n'.join(state["rag_result"]),
+            retrieved_content='\n'.join([str(r) for r in state["rag_result"]]),
             user_question=state["customer_query"],
             retrieval_count=state["rag_cnt"]
         )
@@ -108,6 +109,7 @@ class GeneralAgent(BaseAgent):
 
 
         try:
+            logger.info(f"LLM上下文：{system_message}")
             response = await self.llm.ainvoke([system_message])
             # response = await self.llm.ainvoke([system_message])
         except Exception as e:

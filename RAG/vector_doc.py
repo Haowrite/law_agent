@@ -1,9 +1,9 @@
-# vector_doc.py
 import time
 import os
 import re
 import uuid
 import json
+import gc  # 新增：用于强制垃圾回收
 from typing import Optional, List
 
 from langchain_community.document_loaders import DirectoryLoader, TextLoader, Docx2txtLoader
@@ -27,7 +27,6 @@ import torch
 from tqdm import tqdm
 from config import VECTOR_COLLECTION_NAME, MILVUS_URL, EMBEDDING_DIM, RAG_CACHE_FILE
 import jieba
-
 
 
 def chinese_tokenizer(text: str) -> List[str]:
@@ -75,7 +74,7 @@ def clean_legal_text(text: str) -> str:
 
 
 def split_by_article(text: str, source_path: str) -> List[Document]:
-    pattern = r'(第[零一二三四五六七八九十百千]+条)'
+    pattern = r'(第 [零一二三四五六七八九十百千]+条)'
     parts = re.split(f'({pattern})', text.strip())
 
     docs = []
@@ -113,7 +112,7 @@ def load_documents(source_dir: str) -> List[Document]:
 
         text_loader = DirectoryLoader(
             path=source_dir,
-            glob=["**/*.md", "**/*.txt"],
+            glob=["/*.md", "/*.txt"],
             loader_cls=TextLoader,
             loader_kwargs={"autodetect_encoding": True},
             show_progress=True,
@@ -144,15 +143,15 @@ def load_documents(source_dir: str) -> List[Document]:
         return docs
 
     except Exception as e:
-        logger.error(f"文档加载失败: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"文档加载失败: {str(e)}")
+        logger.error(f"文档加载失败：{str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"文档加载失败：{str(e)}")
 
 def compact_clean(text: str) -> str:
     """
     将多行文本压缩为紧凑单行：
-    - 移除多余空白行
-    - 将连续换行/空格替换为单个空格
-    - 保留句子间自然空格
+    ◦ 移除多余空白行
+    ◦ 将连续换行/空格替换为单个空格
+    ◦ 保留句子间自然空格
     """
     if not text:
         return text
@@ -209,13 +208,13 @@ def save_docs_to_cache(docs: List[Document], cache_path: str = RAG_CACHE_FILE):
         })
     with open(cache_path, "w", encoding="utf-8") as f:
         json.dump(serializable_docs, f, ensure_ascii=False, indent=2)
-    logger.info(f"✓ 文档缓存已保存至: {cache_path}")
+    logger.info(f"✓ 文档缓存已保存至：{cache_path}")
 
 
 def load_docs_from_cache(cache_path: str = RAG_CACHE_FILE) -> List[Document]:
     """从 JSON 文件加载 Document 列表"""
     if not os.path.exists(cache_path):
-        raise FileNotFoundError(f"缓存文件不存在: {cache_path}")
+        raise FileNotFoundError(f"缓存文件不存在：{cache_path}")
     with open(cache_path, "r", encoding="utf-8") as f:
         data = json.load(f)
     docs = []
@@ -230,10 +229,10 @@ def load_docs_from_cache(cache_path: str = RAG_CACHE_FILE) -> List[Document]:
 
 
 @timer('知识库向量化')
-def create_vector_store(m_embedding_model, file_path: Optional[str] = None, re_build: bool = False):
+def create_vector_store(m_embedding_model, vector_manager:VectorManager, file_path: Optional[str] = None, re_build: bool = False):
     try:
         logger.info("=" * 50)
-        logger.info(f"🚀 开始构建法规条文知识库，路径: {file_path} | re_build={re_build}")
+        logger.info(f"🚀 开始构建法规条文知识库，路径：{file_path} | re_build={re_build}")
         logger.info("=" * 50)
 
         # === 连接 Embedded Milvus ===
@@ -251,9 +250,14 @@ def create_vector_store(m_embedding_model, file_path: Optional[str] = None, re_b
                 index_params={"index_type": "FLAT", "metric_type": "L2"}
             )
 
-        VectorManager.vector_store = collection
+        vector_manager.vector_store = collection
+
+        final_docs = []
+        max_size = 0
+        avg_size = 0
 
         if re_build:
+            # --- 重建逻辑 ---
             docs = load_documents(file_path)
             split_docs = split_documents(docs)
 
@@ -284,7 +288,7 @@ def create_vector_store(m_embedding_model, file_path: Optional[str] = None, re_b
                 field_name="vector",
                 index_params={"index_type": "FLAT", "metric_type": "L2"}
             )
-            VectorManager.vector_store = collection
+            vector_manager.vector_store = collection
 
             logger.info("→ 开始分批插入数据到 Milvus...")
             batch_size_insert = 1000
@@ -308,38 +312,85 @@ def create_vector_store(m_embedding_model, file_path: Optional[str] = None, re_b
             save_docs_to_cache(split_docs, RAG_CACHE_FILE)
 
             final_docs = split_docs
-            max_size = max(d.metadata['token_num'] for d in split_docs)
-            avg_size = sum(d.metadata['token_num'] for d in split_docs) // len(split_docs)
+            token_nums = [d.metadata['token_num'] for d in split_docs]
+            max_size = max(token_nums)
+            avg_size = sum(token_nums) // len(token_nums)
             logger.info(f"✓ 向量化完成 ({len(ids)} 条)")
 
         else:
-            logger.info("→ 未启用重建，尝试从缓存文件加载文档用于 BM25...")
+            # --- 非重建逻辑：从 Milvus 使用 query_iterator 游标读取 ---
+            logger.info("→ 未启用重建，正在通过 query_iterator 从 Milvus 加载文档用于 BM25...")
+            
+            final_docs = []
+            total_loaded = 0
+            temp_token_nums = []
+            iterator = None
+            
             try:
-                final_docs = load_docs_from_cache(RAG_CACHE_FILE)
-                if not final_docs:
-                    raise ValueError("缓存文件为空")
-
-                token_nums = [doc.metadata.get('token_num', 0) for doc in final_docs]
-                max_size = max(token_nums)
-                avg_size = sum(token_nums) // len(token_nums)
-                logger.info(f"✓ 从缓存成功加载 {len(final_docs)} 条文档用于 BM25")
-
-            except Exception as e:
-                logger.error(f"⚠️ 从缓存加载文档失败: {e}", exc_info=True)
-                raise HTTPException(
-                    status_code=500,
-                    detail="未重建且无法从缓存加载文档，请先运行 re_build=True"
+                # 创建游标 - batch_size 必须小于 16384
+                iterator = collection.query_iterator(
+                    expr="id != ''",  # 选取所有 id 不为空的数据
+                    output_fields=["text", "metadata", "id"],  # 只取需要的字段，不取 vector
+                    batch_size=1000  # 每批 1000 条，远小于 16384 限制
                 )
+                
+                # 分批获取数据
+                while True:
+                    batch = iterator.next()
+                    if len(batch) == 0:  # 没有更多数据时退出
+                        break
+                    
+                    batch_docs = []
+                    for entity in batch:
+                        text = entity.get("text", "")
+                        meta = entity.get("metadata", {})
+                        
+                        # 重新构建 Document 对象
+                        doc = Document(page_content=text, metadata=meta)
+                        
+                        # 补充 token_num 如果 metadata 中没有 (防止旧数据缺失)
+                        if "token_num" not in meta:
+                            t_num = count_tokens(text)
+                            doc.metadata["token_num"] = t_num
+                            temp_token_nums.append(t_num)
+                        else:
+                            temp_token_nums.append(meta["token_num"])
+                            
+                        batch_docs.append(doc)
 
-        # 构建 BM25
-        VectorManager.bm25_retriever = BM25Retriever.from_documents(final_docs, preprocess_func=chinese_tokenizer)
-        VectorManager.bm25_retriever.k = 10
+                    final_docs.extend(batch_docs)
+                    total_loaded += len(batch_docs)
+                    
+                    # 【关键】内存释放：删除临时列表，触发垃圾回收
+                    del batch
+                    del batch_docs
+                    gc.collect()
 
-        logger.info(f"📊 最终索引: {len(final_docs)} 条 | 平均token长度: {avg_size} | 最大token长度: {max_size}")
+                    logger.debug(f"已加载 {total_loaded} 条...")
+                    
+            finally:
+                # 确保关闭游标
+                if iterator is not None:
+                    iterator.close()
+                    logger.debug("✓ Milvus 游标已关闭")
+
+            if not final_docs:
+                raise ValueError("Milvus 集合中未找到任何文档")
+
+            max_size = max(temp_token_nums)
+            avg_size = sum(temp_token_nums) // len(temp_token_nums)
+            logger.info(f"✓ 从 Milvus 成功加载 {total_loaded} 条文档用于 BM25")
+
+        # 构建 BM25 (统一逻辑)
+        logger.info("→ 正在初始化 BM25 检索器...")
+        vector_manager.bm25_retriever = BM25Retriever.from_documents(final_docs, preprocess_func=chinese_tokenizer)
+        vector_manager.bm25_retriever.k = 10
+
+        logger.info(f"📊 最终索引：{len(final_docs)} 条 | 平均 token 长度：{avg_size} | 最大 token 长度：{max_size}")
         logger.info("=" * 50)
         if not re_build:
-            logger.info("✅ 已从缓存加载文档，BM25 初始化完成")
+            logger.info("✅ 已从 Milvus 加载文档，BM25 初始化完成")
 
     except Exception as e:
-        logger.error(f"❌ 知识库构建失败: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"知识库构建失败: {str(e)}")
+        logger.error(f"❌ 知识库构建失败：{str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"知识库构建失败：{str(e)}")
