@@ -109,7 +109,7 @@ class GeneralAgent(BaseAgent):
 
 
         try:
-            logger.info(f"LLM上下文：{system_message}")
+            # logger.info(f"LLM上下文：{system_message}")
             response = await self.llm.ainvoke([system_message])
             # response = await self.llm.ainvoke([system_message])
         except Exception as e:
