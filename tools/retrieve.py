@@ -4,20 +4,19 @@ from pydantic import BaseModel, Field
 import asyncio
 import uuid
 import time
+import torch # 需要引入 torch 来清理缓存
 from typing import Dict, List, Any
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 
-# 假设 PROCESS_POOL 在你的 agent_thread_pool 中已定义
-# 如果它是 ProcessPoolExecutor，则可以直接传列表过去
 from utils.agent_thread_pool import PROCESS_POOL 
 from utils.retrieve_process import batch_init_and_retrieve
 
 # ================= 配置 =================
-BATCH_SIZE = 32           # 攒够多少个请求处理一次
-BATCH_TIMEOUT = 0.05      # 最大等待时间 (秒)，即 50ms
+INITIAL_BATCH_SIZE = 32   # 初始尝试的批量大小
+MIN_BATCH_SIZE = 1        # 最小降级到 1 (串行)
+BATCH_TIMEOUT = 0.05      # 最大等待时间 (秒)
 # =======================================
 
-# 全局队列和 Pending 映射
 _request_queue = asyncio.Queue()
 _pending_futures: Dict[str, asyncio.Future] = {}
 _processor_task = None
@@ -25,67 +24,107 @@ _processor_task = None
 class vector_store_args(BaseModel): 
     query: str = Field(..., description="查询的内容")
 
+def _run_batch_with_fallback(queries: List[str]) -> List[str]:
+    """
+    【核心优化】带显存保护机制的批量执行函数
+    如果显存不足，自动将批次减半重试，直到成功或降至最小批次
+    """
+    current_batch_size = INITIAL_BATCH_SIZE
+    work_queue = list(queries) # 待处理的查询列表
+    final_results = [None] * len(queries) # 预分配结果列表，保持顺序
+    
+    # 我们需要记录原始索引，以便将结果放回正确的位置
+    # 但为了简化，这里采用一种策略：
+    # 如果整体批次失败，我们将其拆分为更小的块递归处理
+    
+    def process_chunk(chunk_queries: List[str], start_index: int):
+        """尝试处理一个切片，如果 OOM 则递归拆分"""
+        if not chunk_queries:
+            return
+            
+        try:
+            # 尝试执行
+            # 注意：这里需要 modify retrieve_process.py 让它支持处理切片并返回对应结果
+            # 或者我们在这里循环调用单条 (效率低但保底)
+            # 为了利用现有代码，我们假设 batch_init_and_retrieve 能处理任意长度列表
+            
+            results = batch_init_and_retrieve(chunk_queries)
+            
+            # 填入结果
+            for i, res in enumerate(results):
+                final_results[start_index + i] = res
+                
+        except RuntimeError as e:
+            if "CUDA out of memory" in str(e) or "cuDNN error" in str(e):
+                # 显存不足警告
+                print(f"⚠️  Detect OOM! Batch size {len(chunk_queries)} too large. Splitting...")
+                
+                # 强制清理 PyTorch 缓存 (关键步骤)
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                
+                # 递归拆分：将当前批次一分为二
+                mid = len(chunk_queries) // 2
+                if mid == 0:
+                    # 如果已经是一个一个了还 OOM，那是真的没办法了，抛出异常
+                    raise e
+                
+                # 处理前半部分
+                process_chunk(chunk_queries[:mid], start_index)
+                # 处理后半部分
+                process_chunk(chunk_queries[mid:], start_index + mid)
+            else:
+                # 其他错误直接抛出
+                raise e
+
+    # 开始处理整个列表
+    process_chunk(work_queue, 0)
+    
+    return final_results
+
 async def _batch_processor_loop():
-    """
-    后台协程：不断从队列取请求，攒批，然后提交到进程池执行
-    """
     buffer: List[Dict[str, Any]] = []
     last_flush_time = time.time()
 
     while True:
         try:
-            # 尝试获取一个请求
-            # 使用 wait_for 设置超时，以便定期检查是否要 flush
             try:
                 item = await asyncio.wait_for(_request_queue.get(), timeout=BATCH_TIMEOUT)
                 buffer.append(item)
-                last_flush_time = time.time() # 重置计时器
+                last_flush_time = time.time()
             except asyncio.TimeoutError:
-                pass # 超时，检查是否需要 flush
+                pass
 
-            # 判断是否触发 Flush 条件：数量达标 OR 时间达标且有数据
             should_flush = False
-            if len(buffer) >= BATCH_SIZE:
+            if len(buffer) >= INITIAL_BATCH_SIZE:
                 should_flush = True
             elif len(buffer) > 0 and (time.time() - last_flush_time) >= BATCH_TIMEOUT:
                 should_flush = True
 
             if should_flush and buffer:
-                # 执行批量处理
                 current_batch = buffer
                 buffer = []
                 
-                # 提取 ID 和 Query
                 request_ids = [item['id'] for item in current_batch]
                 queries = [item['query'] for item in current_batch]
                 
-                logger_info = f"Processing batch: {len(queries)} queries"
-                # 可以在这里打印日志，如果需要的话
-                
-                # 【关键】提交到进程池执行批量函数
-                # PROCESS_POOL.submit 返回一个 concurrent.futures.Future
-                # 我们需要将其转换为 asyncio.Future 或者在一个线程中等待它
                 loop = asyncio.get_running_loop()
                 
                 try:
-                    # 在默认线程池中运行阻塞的进程池调用，避免阻塞事件循环
+                    # 使用带 fallback 的包装函数
                     results = await loop.run_in_executor(
                         None, 
-                        lambda: PROCESS_POOL.submit(batch_init_and_retrieve, queries).result()
+                        lambda: PROCESS_POOL.submit(_run_batch_with_fallback, queries).result()
                     )
                     
-                    # 分发结果
                     for i, req_id in enumerate(request_ids):
                         if req_id in _pending_futures:
                             future = _pending_futures.pop(req_id)
                             if not future.done():
                                 future.set_result(results[i])
-                        else:
-                            # 可能超时被清理了
-                            pass
                             
                 except Exception as e:
-                    # 出错时通知所有该批次的请求
+                    print(f"❌ Batch processing failed completely: {e}")
                     for req_id in request_ids:
                         if req_id in _pending_futures:
                             future = _pending_futures.pop(req_id)
@@ -93,12 +132,10 @@ async def _batch_processor_loop():
                                 future.set_exception(e)
                                 
         except Exception as e:
-            # 防止循环意外退出
-            print(f"Batch processor error: {e}")
+            print(f"Batch processor loop error: {e}")
             await asyncio.sleep(1)
 
 def _ensure_processor_started():
-    """确保后台处理任务已启动"""
     global _processor_task
     if _processor_task is None or _processor_task.done():
         _processor_task = asyncio.create_task(_batch_processor_loop())
@@ -114,19 +151,15 @@ async def retrieve_vector_store(query: str) -> str:
     request_id = str(uuid.uuid4())
     loop = asyncio.get_running_loop()
     
-    # 创建 Future 用于等待结果
     future = loop.create_future()
     _pending_futures[request_id] = future
     
-    # 将请求放入队列
     await _request_queue.put({"id": request_id, "query": query})
     
     try:
-        # 等待结果 (设置总超时，防止死锁)
         result = await asyncio.wait_for(future, timeout=60.0)
         return result
     except asyncio.TimeoutError:
-        # 清理 pending
         if request_id in _pending_futures:
             del _pending_futures[request_id]
         raise TimeoutError("RAG retrieval timeout")
