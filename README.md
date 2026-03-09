@@ -23,5 +23,3 @@ bash start.sh
 ![alt text](image.png)
 
 
-
-## 因为自己做的，有很多问题，希望能有大佬指出相关意见，帮助优化
