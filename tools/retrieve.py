@@ -90,8 +90,9 @@ async def _batch_processor_loop():
         try:
             try:
                 item = await asyncio.wait_for(_request_queue.get(), timeout=BATCH_TIMEOUT)
+                if len(buffer) == 0:
+                    last_flush_time = time.time()  # 新批次开始，重置计时 
                 buffer.append(item)
-                last_flush_time = time.time()
             except asyncio.TimeoutError:
                 pass
 
