@@ -9,7 +9,6 @@ from langchain_core.messages import SystemMessage, AIMessage
 from regex import R
 from .base_agent import BaseAgent
 from app_logger import llm_logger as logger, timer
-from utils.agent_thread_pool import AGENT_EXECUTOR
 import time
 
 class GeneralAgent(BaseAgent):
@@ -58,7 +57,7 @@ class GeneralAgent(BaseAgent):
     search_query = ""
 
 第四步：如果 retrieved_content 不足（为空或无关）：
-    - 若 retrieval_count >= 3：
+    - 若 retrieval_count >= 5：
         enable_answer = True
         response = "无法解决您的问题。建议您详细描述具体法律场景、涉及的主体或相关法条，以便我们更好地帮助您。"
         search_query = ""
@@ -66,13 +65,13 @@ class GeneralAgent(BaseAgent):
         enable_answer = False
         response = ""
         search_query = user_question
-    - 若 1 <= retrieval_count < 3：
+    - 若 1 <= retrieval_count < 5：
         enable_answer = False
         response = ""
-        search_query = 对 user_question 的合理改写，目标是提升法律相关性和检索效果。改写应保持原意，但可增加法律关键词、主体、行为或场景细节。
+        search_query = 基于当前上下文对 user_question 的合理改写或者提出一个新的检索问题，目标是提升法律相关性和多方面检索，可增加法律关键词、主体、行为或场景细节，但该问题要能够用户诉求。
 
 改写问题示例：
-- 原问题：“打人会怎么样？” → 改写：“在中国，故意殴打他人可能承担哪些法律责任？”
+- 原问题：“打人会怎么样？” → 改写：“故意殴打他人可能承担哪些法律责任？”
 - 原问题：“租房合同要注意什么？” → 改写：“签订房屋租赁合同时，出租人和承租人应注意哪些法律条款？”
 - 原问题：“公司不给工资怎么办？” → 改写：“用人单位拖欠劳动者工资，员工可以采取哪些法律救济措施？”
 

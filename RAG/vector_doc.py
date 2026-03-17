@@ -380,7 +380,7 @@ def create_vector_store(m_embedding_model, vector_manager:VectorManager, file_pa
             max_size = max(temp_token_nums)
             avg_size = sum(temp_token_nums) // len(temp_token_nums)
             logger.info(f"✓ 从 Milvus 成功加载 {total_loaded} 条文档用于 BM25")
-
+        collection.load()
         # 构建 BM25 (统一逻辑)
         logger.info("→ 正在初始化 BM25 检索器...")
         vector_manager.bm25_retriever = BM25Retriever.from_documents(final_docs, preprocess_func=chinese_tokenizer)

@@ -22,9 +22,6 @@ from langchain_core.messages import HumanMessage
 from app_logger import app_logger as logger
 from db_crud.base_func import get_time
 from db_crud.user_crud import create_user, authenticate_user, get_user_by_id
-from arq import create_pool
-from arq.connections import RedisSettings
-from db_crud.arq_tasks import REDIS_SETTINGS  # 从 tasks 导入配置
 from db_crud.chat_memory_crud import (
     AsyncMySQLChatHistory,
     create_chat_session,
@@ -108,34 +105,11 @@ async def lifespan(app: FastAPI):
         logger.error(f"❌ 数据库初始化失败: {e}")
         raise
 
-    # ------------------------------
-    # 2. 创建 arq 任务提交客户端（用于 enqueue_job）
-    # ------------------------------
-    try:
-        app.state.arq_pool = await create_pool(REDIS_SETTINGS)
-        logger.info("✅ arq 任务客户端初始化成功")
-    except Exception as e:
-        logger.error(f"❌ arq 客户端初始化失败: {e}")
-        raise
-
     # ==============================
     # 应用运行阶段
     # ==============================
     yield
 
-    # ==============================
-    # 关闭阶段（倒序释放资源）
-    # ==============================
-
-    # ------------------------------
-    # 1. 关闭 arq 提交客户端
-    # ------------------------------
-    if hasattr(app.state, 'arq_pool'):
-        try:
-            await app.state.arq_pool.close()
-            logger.info("CloseOperation arq 任务客户端")
-        except Exception as e:
-            logger.error(f"⚠️ arq 客户端关闭异常: {e}")
 
     # ------------------------------
     # 2. 关闭 Redis 连接（来自 m_conversation_manager）
@@ -177,7 +151,6 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan
 )
-
 
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -256,20 +229,19 @@ async def chat(req: ChatRequest, user_id: str = Query(...)):
         # ✅ 异步：提交 DB 写入任务（非阻塞！）
     try:
         # 提交用户消息
-        await app.state.arq_pool.enqueue_job(
-            'save_chat_message',
-            req.session_id,
-            req.message,
-            'user',
-            user_timestamp
+        await AsyncMySQLChatHistory.add_message(
+            session_id=req.session_id,
+            message=req.message,
+            role='user',
+            timestamp=user_timestamp
         )
+        
         # 提交 AI 消息
-        await app.state.arq_pool.enqueue_job(
-            'save_chat_message',
-            req.session_id,
-            ai_response,
-            'ai',
-            get_time()  
+        await AsyncMySQLChatHistory.add_message(
+            session_id=req.session_id,
+            message=ai_response,
+            role='ai',
+            timestamp=get_time()  
         )
     except Exception as e:
         # 记录错误但不中断主流程（任务会进入 arq 失败队列）

@@ -1,4 +1,6 @@
 # retrieve.py
+from os import wait
+
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 import asyncio
@@ -89,7 +91,12 @@ async def _batch_processor_loop():
     while True:
         try:
             try:
-                item = await asyncio.wait_for(_request_queue.get(), timeout=BATCH_TIMEOUT)
+                wait_time = BATCH_TIMEOUT
+                if len(buffer) == 0:
+                    wait_time = None  # 如果缓冲区为空，等待直到有新请求
+                else:
+                    wait_time = max(5, BATCH_TIMEOUT - (time.time() - last_flush_time))
+                item = await asyncio.wait_for(_request_queue.get(), timeout=wait_time)
                 if len(buffer) == 0:
                     last_flush_time = time.time()  # 新批次开始，重置计时 
                 buffer.append(item)
