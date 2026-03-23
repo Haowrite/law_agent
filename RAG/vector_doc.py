@@ -286,7 +286,7 @@ def create_vector_store(m_embedding_model, vector_manager:VectorManager, file_pa
             )
 
         vector_manager.vector_store = collection
-
+    
         final_docs = []
         max_size = 0
         avg_size = 0
