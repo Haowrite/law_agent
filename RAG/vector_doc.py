@@ -20,7 +20,6 @@ from pymilvus import (
 
 from app_logger import database_logger as logger
 from app_logger import timer
-from fastapi import HTTPException
 import unicodedata
 from db_crud.base_func import count_tokens
 import torch
@@ -74,7 +73,15 @@ def clean_legal_text(text: str) -> str:
 
 
 def split_by_article(text: str, source_path: str) -> List[Document]:
-    pattern = r'(第 [零一二三四五六七八九十百千]+条)'
+    """
+    增强版：使用更灵活的正则表达式切分法律条文，兼容：
+    - 紧凑格式：第一条，第一百零一条
+    - 带空格格式：第 一 条， 第 一百零一 条
+    - 阿拉伯数字：第1条， 第 101 条
+    """
+    # 核心修改：在“第”、“数字”、“条”之间加入 \s* 来匹配0个或多个空格
+    pattern = r'(第\s*[零一二三四五六七八九十百千]+\s*条)'
+    
     parts = re.split(f'({pattern})', text.strip())
 
     docs = []
@@ -108,24 +115,52 @@ def split_by_article(text: str, source_path: str) -> List[Document]:
 
 def load_documents(source_dir: str) -> List[Document]:
     try:
+        # ===== 【关键修改】增加诊断日志 =====
+        logger.info(f"🛠️ 开始加载文档，源目录：{source_dir}")
+        logger.info(f"🛠️ 源目录绝对路径：{os.path.abspath(source_dir)}")
+        
+        # 手动检查目录是否存在
+        if not os.path.isdir(source_dir):
+            logger.error(f"❌ 提供的路径不是目录或不存在：{source_dir}")
+            raise RuntimeError(detail=f"文档目录不存在：{source_dir}")
+        
+        # 手动列出目录下所有文件（用于诊断）
+        all_files = []
+        for root, dirs, files in os.walk(source_dir):
+            for file in files:
+                all_files.append(os.path.join(root, file))
+        logger.info(f"🛠️ 目录下找到 {len(all_files)} 个文件（所有类型）。前10个：{all_files[:10]}")
+        # ===== 诊断日志结束 =====
+
         docs = []
 
+        # ===== 【关键修改】修正 glob 模式 =====
+        # 原：glob=[".md", ".txt"] -> 错误，无法匹配任何文件
+        # 现：glob=["*.md", "*.txt"] -> 正确，匹配所有 .md 和 .txt 文件
         text_loader = DirectoryLoader(
             path=source_dir,
-            glob=["/*.md", "/*.txt"],
+            glob=["*.md", "*.txt"],  # 修改点：添加星号 (*)
             loader_cls=TextLoader,
             loader_kwargs={"autodetect_encoding": True},
             show_progress=True,
+            recursive=True
         )
-        docs.extend(text_loader.load())
+        loaded_text = text_loader.load()
+        logger.info(f"🛠️ TextLoader 加载了 {len(loaded_text)} 个 .md/.txt 文档")
+        docs.extend(loaded_text)
 
+        # Docx2txtLoader 的 glob 模式是正确的
         docx_loader = DirectoryLoader(
             path=source_dir,
-            glob=["**/*.docx"],
+            glob=["*.docx"],
             loader_cls=Docx2txtLoader,
             show_progress=True,
+            recursive=True
         )
-        docs.extend(docx_loader.load())
+        loaded_docx = docx_loader.load()
+        logger.info(f"🛠️ Docx2txtLoader 加载了 {len(loaded_docx)} 个 .docx 文档")
+        docs.extend(loaded_docx)
+        # ===== 修改结束 =====
 
         for doc in docs:
             original_len = len(doc.page_content)
@@ -144,7 +179,7 @@ def load_documents(source_dir: str) -> List[Document]:
 
     except Exception as e:
         logger.error(f"文档加载失败：{str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"文档加载失败：{str(e)}")
+        raise RuntimeError(f"文档加载失败：{str(e)}")
 
 def compact_clean(text: str) -> str:
     """
@@ -260,6 +295,20 @@ def create_vector_store(m_embedding_model, vector_manager:VectorManager, file_pa
             # --- 重建逻辑 ---
             docs = load_documents(file_path)
             split_docs = split_documents(docs)
+
+            # ===== 【关键修改】提前判空并给出明确错误 =====
+            if not split_docs:
+                error_msg = (
+                    f"无法构建知识库：从目录 '{file_path}' 中未加载到任何有效文档。\n"
+                    f"可能原因：\n"
+                    f"  1. 目录路径错误。\n"
+                    f"  2. 目录内无 .md, .txt, .docx 文件。\n"
+                    f"  3. 文件内容为空或清洗后内容被过滤。\n"
+                    f"请检查日志中 `load_documents` 函数输出的诊断信息。"
+                )
+                logger.error(error_msg)
+                raise RuntimeError(error_msg)
+            # ===== 判空结束 =====
 
             for doc in split_docs:
                 doc.metadata["id"] = str(uuid.uuid4())
@@ -393,4 +442,4 @@ def create_vector_store(m_embedding_model, vector_manager:VectorManager, file_pa
 
     except Exception as e:
         logger.error(f"❌ 知识库构建失败：{str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"知识库构建失败：{str(e)}")
+        raise RuntimeError(f"知识库构建失败：{str(e)}")

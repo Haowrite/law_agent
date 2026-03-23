@@ -231,17 +231,17 @@ async def chat(req: ChatRequest, user_id: str = Query(...)):
         # 提交用户消息
         await AsyncMySQLChatHistory.add_message(
             session_id=req.session_id,
-            message=req.message,
-            role='user',
-            timestamp=user_timestamp
+            content=req.message,
+            message_type='user',
+            time_stamp=user_timestamp
         )
         
         # 提交 AI 消息
         await AsyncMySQLChatHistory.add_message(
             session_id=req.session_id,
-            message=ai_response,
-            role='ai',
-            timestamp=get_time()  
+            content=ai_response,
+            message_type='ai',
+            time_stamp=get_time()  
         )
     except Exception as e:
         # 记录错误但不中断主流程（任务会进入 arq 失败队列）

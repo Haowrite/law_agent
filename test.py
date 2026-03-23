@@ -1,5 +1,3 @@
+from modelscope.hub.snapshot_download import snapshot_download
 
-
-if __name__ == "__main__":
-    m = [{"text": "hello world"}, {"text": "hello ai"}, {"text": "hello python"}]
-    print('\n'.join([str(item) for item in m]))
+model_dir = snapshot_download('BAAI/bge-large-zh-v1.5', cache_dir='/home/RAG_agent/model/models/bge')
