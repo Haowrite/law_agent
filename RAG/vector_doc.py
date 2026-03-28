@@ -38,12 +38,16 @@ class VectorManager:
 
 
 def _get_collection_schema() -> CollectionSchema:
-    """定义 Milvus 集合 Schema"""
+    """定义 Milvus 集合 Schema（新增 filename, article, start_position 字段）"""
     fields = [
         FieldSchema(name="id", dtype=DataType.VARCHAR, is_primary=True, max_length=36),
         FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=65535),
         FieldSchema(name="metadata", dtype=DataType.JSON),
         FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=EMBEDDING_DIM),
+        # 新增：将 filename、article、start_position 作为独立字段，便于表达式检索
+        FieldSchema(name="filename", dtype=DataType.VARCHAR, max_length=512),
+        FieldSchema(name="article", dtype=DataType.VARCHAR, max_length=256),
+        FieldSchema(name="start_position", dtype=DataType.INT64),
     ]
     return CollectionSchema(fields, description="Legal articles collection")
 
@@ -57,7 +61,7 @@ def clean_legal_text(text: str) -> str:
 
     punct_map = {
         "，": ",", "。": ".", "（": "(", "）": ")", "；": ";", "：": ":",
-        "！": "!", "？": "?", "“": '"', "”": '"', "‘": "'", "’": "'",
+        "！": "!", "？": "?", "\u201c": '"', "\u201d": '"', "\u2018": "'", "\u2019": "'",
         "【": "[", "】": "]", "《": "<", "》": ">", "、": ",", "·": "·"
     }
     for cn, en in punct_map.items():
@@ -79,9 +83,9 @@ def split_by_article(text: str, source_path: str) -> List[Document]:
     - 带空格格式：第 一 条， 第 一百零一 条
     - 阿拉伯数字：第1条， 第 101 条
     """
-    # 核心修改：在“第”、“数字”、“条”之间加入 \s* 来匹配0个或多个空格
+    # 核心修改：在"第"、"数字"、"条"之间加入 \s* 来匹配0个或多个空格
     pattern = r'(第\s*[零一二三四五六七八九十百千]+\s*条)'
-    
+
     parts = re.split(f'({pattern})', text.strip())
 
     docs = []
@@ -116,40 +120,36 @@ def split_by_article(text: str, source_path: str) -> List[Document]:
 def load_documents(source_dir: str) -> List[Document]:
     try:
         # ===== 【关键修改】增加诊断日志 =====
-        logger.info(f"🛠️ 开始加载文档，源目录：{source_dir}")
-        logger.info(f"🛠️ 源目录绝对路径：{os.path.abspath(source_dir)}")
-        
+        logger.info(f"开始加载文档，源目录：{source_dir}")
+        logger.info(f"源目录绝对路径：{os.path.abspath(source_dir)}")
+
         # 手动检查目录是否存在
         if not os.path.isdir(source_dir):
-            logger.error(f"❌ 提供的路径不是目录或不存在：{source_dir}")
+            logger.error(f"提供的路径不是目录或不存在：{source_dir}")
             raise RuntimeError(detail=f"文档目录不存在：{source_dir}")
-        
+
         # 手动列出目录下所有文件（用于诊断）
         all_files = []
         for root, dirs, files in os.walk(source_dir):
             for file in files:
                 all_files.append(os.path.join(root, file))
-        logger.info(f"🛠️ 目录下找到 {len(all_files)} 个文件（所有类型）。前10个：{all_files[:10]}")
+        logger.info(f"目录下找到 {len(all_files)} 个文件（所有类型）。前10个：{all_files[:10]}")
         # ===== 诊断日志结束 =====
 
         docs = []
 
-        # ===== 【关键修改】修正 glob 模式 =====
-        # 原：glob=[".md", ".txt"] -> 错误，无法匹配任何文件
-        # 现：glob=["*.md", "*.txt"] -> 正确，匹配所有 .md 和 .txt 文件
         text_loader = DirectoryLoader(
             path=source_dir,
-            glob=["*.md", "*.txt"],  # 修改点：添加星号 (*)
+            glob=["*.md", "*.txt"],
             loader_cls=TextLoader,
             loader_kwargs={"autodetect_encoding": True},
             show_progress=True,
             recursive=True
         )
         loaded_text = text_loader.load()
-        logger.info(f"🛠️ TextLoader 加载了 {len(loaded_text)} 个 .md/.txt 文档")
+        logger.info(f"TextLoader 加载了 {len(loaded_text)} 个 .md/.txt 文档")
         docs.extend(loaded_text)
 
-        # Docx2txtLoader 的 glob 模式是正确的
         docx_loader = DirectoryLoader(
             path=source_dir,
             glob=["*.docx"],
@@ -158,9 +158,8 @@ def load_documents(source_dir: str) -> List[Document]:
             recursive=True
         )
         loaded_docx = docx_loader.load()
-        logger.info(f"🛠️ Docx2txtLoader 加载了 {len(loaded_docx)} 个 .docx 文档")
+        logger.info(f"Docx2txtLoader 加载了 {len(loaded_docx)} 个 .docx 文档")
         docs.extend(loaded_docx)
-        # ===== 修改结束 =====
 
         for doc in docs:
             original_len = len(doc.page_content)
@@ -174,32 +173,33 @@ def load_documents(source_dir: str) -> List[Document]:
                 "filename": filename_without_ext,
             })
 
-        logger.info(f"✓ 成功加载并清洗 {len(docs)} 个文档（含 .md / .txt / .docx）")
+        logger.info(f"成功加载并清洗 {len(docs)} 个文档（含 .md / .txt / .docx）")
         return docs
 
     except Exception as e:
         logger.error(f"文档加载失败：{str(e)}", exc_info=True)
         raise RuntimeError(f"文档加载失败：{str(e)}")
 
+
 def compact_clean(text: str) -> str:
     """
     将多行文本压缩为紧凑单行：
-    ◦ 移除多余空白行
-    ◦ 将连续换行/空格替换为单个空格
-    ◦ 保留句子间自然空格
+    - 移除多余空白行
+    - 将连续换行/空格替换为单个空格
+    - 保留句子间自然空格
     """
     if not text:
         return text
-    # 替换所有空白字符（包括 \n, \t, 多个空格）为单个空格
     text = re.sub(r'\s+', ' ', text)
-    # 去除首尾空格
     return text.strip()
+
 
 def split_documents(documents: List[Document]) -> List[Document]:
     all_article_docs = []
+    # 【修改】chunk_overlap 改为 0
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
-        chunk_overlap=50,
+        chunk_overlap=0,
         length_function=count_tokens,
         separators=["\n\n", "\n", "。", "；", "，", " ", ""]
     )
@@ -210,26 +210,38 @@ def split_documents(documents: List[Document]) -> List[Document]:
             source_path=doc.metadata["source"]
         )
         for art_doc in article_docs:
-        # 👇 对每条 article 内容做紧凑清洗
+            # 对每条 article 内容做紧凑清洗
             art_doc.page_content = compact_clean(art_doc.page_content)
-            
+
             token_num = count_tokens(art_doc.page_content)
-            if token_num <= 800:
+            if token_num <= 512:
+                # 不需要切分 chunk，start_position 为 0
+                art_doc.metadata["start_position"] = 0
                 all_article_docs.append(art_doc)
             else:
-                # 如果仍超长，先用 RecursiveCharacterTextSplitter 切分
+                # 超长条文需要切分 chunk，overlap=0
+                full_text = art_doc.page_content
                 sub_docs = text_splitter.split_documents([art_doc])
+                # 为每个 chunk 计算在原始条文中的起始位置
+                search_start = 0
                 for i, sub_doc in enumerate(sub_docs):
-                    # 👇 对每个子 chunk 也做紧凑清洗
-                    sub_doc.page_content = compact_clean(sub_doc.page_content)
+                    # 计算该 chunk 在原始完整条文中的字符起始位置
+                    chunk_pos = full_text.find(sub_doc.page_content, search_start)
+                    if chunk_pos == -1:
+                        # 如果精确匹配失败（可能因为清洗差异），使用累计位置
+                        chunk_pos = search_start
+                    else:
+                        search_start = chunk_pos + len(sub_doc.page_content)
+
                     sub_doc.metadata.update({
-                        "article": f"{art_doc.metadata['article']}_part{i+1}",
+                        "article": art_doc.metadata["article"],
                         "filename": art_doc.metadata["filename"],
                         "source": art_doc.metadata["source"],
+                        "start_position": chunk_pos,
                     })
                 all_article_docs.extend(sub_docs)
 
-    logger.info(f"✓ 条文切分完成 | 共提取 {len(all_article_docs)} 条/子条法规条文")
+    logger.info(f"条文切分完成 | 共提取 {len(all_article_docs)} 条/子条法规条文")
     return all_article_docs
 
 
@@ -243,7 +255,7 @@ def save_docs_to_cache(docs: List[Document], cache_path: str = RAG_CACHE_FILE):
         })
     with open(cache_path, "w", encoding="utf-8") as f:
         json.dump(serializable_docs, f, ensure_ascii=False, indent=2)
-    logger.info(f"✓ 文档缓存已保存至：{cache_path}")
+    logger.info(f"文档缓存已保存至：{cache_path}")
 
 
 def load_docs_from_cache(cache_path: str = RAG_CACHE_FILE) -> List[Document]:
@@ -259,15 +271,15 @@ def load_docs_from_cache(cache_path: str = RAG_CACHE_FILE) -> List[Document]:
             metadata=item["metadata"]
         )
         docs.append(doc)
-    logger.info(f"✓ 从缓存加载 {len(docs)} 条文档")
+    logger.info(f"从缓存加载 {len(docs)} 条文档")
     return docs
 
 
 @timer('知识库向量化')
-def create_vector_store(m_embedding_model, vector_manager:VectorManager, file_path: Optional[str] = None, re_build: bool = False):
+def create_vector_store(m_embedding_model, vector_manager: VectorManager, file_path: Optional[str] = None, re_build: bool = False):
     try:
         logger.info("=" * 50)
-        logger.info(f"🚀 开始构建法规条文知识库，路径：{file_path} | re_build={re_build}")
+        logger.info(f"开始构建法规条文知识库，路径：{file_path} | re_build={re_build}")
         logger.info("=" * 50)
 
         # === 连接 Embedded Milvus ===
@@ -286,7 +298,7 @@ def create_vector_store(m_embedding_model, vector_manager:VectorManager, file_pa
             )
 
         vector_manager.vector_store = collection
-    
+
         final_docs = []
         max_size = 0
         avg_size = 0
@@ -296,7 +308,6 @@ def create_vector_store(m_embedding_model, vector_manager:VectorManager, file_pa
             docs = load_documents(file_path)
             split_docs = split_documents(docs)
 
-            # ===== 【关键修改】提前判空并给出明确错误 =====
             if not split_docs:
                 error_msg = (
                     f"无法构建知识库：从目录 '{file_path}' 中未加载到任何有效文档。\n"
@@ -308,18 +319,24 @@ def create_vector_store(m_embedding_model, vector_manager:VectorManager, file_pa
                 )
                 logger.error(error_msg)
                 raise RuntimeError(error_msg)
-            # ===== 判空结束 =====
 
             for doc in split_docs:
                 doc.metadata["id"] = str(uuid.uuid4())
                 doc.metadata["token_num"] = count_tokens(doc.page_content)
+                # 确保 start_position 存在
+                if "start_position" not in doc.metadata:
+                    doc.metadata["start_position"] = 0
 
             ids = [doc.metadata["id"] for doc in split_docs]
             texts = [doc.page_content for doc in split_docs]
             metadatas = [doc.metadata for doc in split_docs]
+            # 新增：提取独立字段
+            filenames = [doc.metadata.get("filename", "") for doc in split_docs]
+            articles = [doc.metadata.get("article", "") for doc in split_docs]
+            start_positions = [doc.metadata.get("start_position", 0) for doc in split_docs]
 
             # 向量化
-            logger.info("→ 正在生成向量...")
+            logger.info("正在生成向量...")
             vectors = []
             batch_size = 128
             for i in tqdm(range(0, len(texts), batch_size), desc="Embedding"):
@@ -329,7 +346,7 @@ def create_vector_store(m_embedding_model, vector_manager:VectorManager, file_pa
                 torch.cuda.empty_cache()
 
             # 重建集合
-            logger.info("→ 正在重建 Milvus 集合...")
+            logger.info("正在重建 Milvus 集合...")
             utility.drop_collection(collection_name)
             schema = _get_collection_schema()
             collection = Collection(collection_name, schema)
@@ -339,7 +356,7 @@ def create_vector_store(m_embedding_model, vector_manager:VectorManager, file_pa
             )
             vector_manager.vector_store = collection
 
-            logger.info("→ 开始分批插入数据到 Milvus...")
+            logger.info("开始分批插入数据到 Milvus...")
             batch_size_insert = 1000
             total = len(ids)
 
@@ -350,12 +367,16 @@ def create_vector_store(m_embedding_model, vector_manager:VectorManager, file_pa
                     texts[i:end_idx],
                     metadatas[i:end_idx],
                     vectors[i:end_idx],
+                    # 新增：插入独立字段
+                    filenames[i:end_idx],
+                    articles[i:end_idx],
+                    start_positions[i:end_idx],
                 ]
                 collection.insert(batch_data)
                 del batch_data
 
             collection.flush()
-            logger.info(f"✓ 全部 {total} 条数据已成功插入 Milvus")
+            logger.info(f"全部 {total} 条数据已成功插入 Milvus")
 
             # === 保存 split_docs 到缓存文件 ===
             save_docs_to_cache(split_docs, RAG_CACHE_FILE)
@@ -364,82 +385,85 @@ def create_vector_store(m_embedding_model, vector_manager:VectorManager, file_pa
             token_nums = [d.metadata['token_num'] for d in split_docs]
             max_size = max(token_nums)
             avg_size = sum(token_nums) // len(token_nums)
-            logger.info(f"✓ 向量化完成 ({len(ids)} 条)")
+            logger.info(f"向量化完成 ({len(ids)} 条)")
 
         else:
             # --- 非重建逻辑：从 Milvus 使用 query_iterator 游标读取 ---
-            logger.info("→ 未启用重建，正在通过 query_iterator 从 Milvus 加载文档用于 BM25...")
-            
+            logger.info("未启用重建，正在通过 query_iterator 从 Milvus 加载文档用于 BM25...")
+
             final_docs = []
             total_loaded = 0
             temp_token_nums = []
             iterator = None
-            
+
             try:
-                # 创建游标 - batch_size 必须小于 16384
                 iterator = collection.query_iterator(
-                    expr="id != ''",  # 选取所有 id 不为空的数据
-                    output_fields=["text", "metadata", "id"],  # 只取需要的字段，不取 vector
-                    batch_size=1000  # 每批 1000 条，远小于 16384 限制
+                    expr="id != ''",
+                    output_fields=["text", "metadata", "id", "filename", "article", "start_position"],
+                    batch_size=1000
                 )
-                
-                # 分批获取数据
+
                 while True:
                     batch = iterator.next()
-                    if len(batch) == 0:  # 没有更多数据时退出
+                    if len(batch) == 0:
                         break
-                    
+
                     batch_docs = []
                     for entity in batch:
                         text = entity.get("text", "")
                         meta = entity.get("metadata", {})
-                        
-                        # 重新构建 Document 对象
+
                         doc = Document(page_content=text, metadata=meta)
-                        
-                        # 补充 token_num 如果 metadata 中没有 (防止旧数据缺失)
+
                         if "token_num" not in meta:
                             t_num = count_tokens(text)
                             doc.metadata["token_num"] = t_num
                             temp_token_nums.append(t_num)
                         else:
                             temp_token_nums.append(meta["token_num"])
-                            
+
+                        # 确保 metadata 中有 filename, article, start_position
+                        if "filename" not in doc.metadata:
+                            doc.metadata["filename"] = entity.get("filename", "")
+                        if "article" not in doc.metadata:
+                            doc.metadata["article"] = entity.get("article", "")
+                        if "start_position" not in doc.metadata:
+                            doc.metadata["start_position"] = entity.get("start_position", 0)
+
                         batch_docs.append(doc)
 
                     final_docs.extend(batch_docs)
                     total_loaded += len(batch_docs)
-                    
-                    # 【关键】内存释放：删除临时列表，触发垃圾回收
+
                     del batch
                     del batch_docs
                     gc.collect()
 
                     logger.debug(f"已加载 {total_loaded} 条...")
-                    
+
             finally:
-                # 确保关闭游标
                 if iterator is not None:
                     iterator.close()
-                    logger.debug("✓ Milvus 游标已关闭")
+                    logger.debug("Milvus 游标已关闭")
 
             if not final_docs:
                 raise ValueError("Milvus 集合中未找到任何文档")
 
             max_size = max(temp_token_nums)
             avg_size = sum(temp_token_nums) // len(temp_token_nums)
-            logger.info(f"✓ 从 Milvus 成功加载 {total_loaded} 条文档用于 BM25")
+            logger.info(f"从 Milvus 成功加载 {total_loaded} 条文档用于 BM25")
+
         collection.load()
         # 构建 BM25 (统一逻辑)
-        logger.info("→ 正在初始化 BM25 检索器...")
+        logger.info("正在初始化 BM25 检索器...")
         vector_manager.bm25_retriever = BM25Retriever.from_documents(final_docs, preprocess_func=chinese_tokenizer)
         vector_manager.bm25_retriever.k = 10
 
-        logger.info(f"📊 最终索引：{len(final_docs)} 条 | 平均 token 长度：{avg_size} | 最大 token 长度：{max_size}")
+        logger.info(f"最终索引：{len(final_docs)} 条 | 平均 token 长度：{avg_size} | 最大 token 长度：{max_size}")
         logger.info("=" * 50)
         if not re_build:
-            logger.info("✅ 已从 Milvus 加载文档，BM25 初始化完成")
+            logger.info("已从 Milvus 加载文档，BM25 初始化完成")
 
     except Exception as e:
-        logger.error(f"❌ 知识库构建失败：{str(e)}", exc_info=True)
+        logger.error(f"知识库构建失败：{str(e)}", exc_info=True)
         raise RuntimeError(f"知识库构建失败：{str(e)}")

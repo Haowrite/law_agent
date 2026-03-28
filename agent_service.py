@@ -12,7 +12,7 @@ from app_logger import llm_logger as logger
 from config import *
 # 导入智能体和工具
 from agents import GeneralAgent
-from tools.base import tool_dict
+from RAG.retrieve import  retrieve_vector_store
 from model.get_model import get_llm
 from config import MODEL,  TEMPERATURE
 import time
@@ -50,11 +50,11 @@ def router_edge_node(state: AgentState):
 
 # RAG检索节点
 async def tool_call_node(state: AgentState):
-    """执行RAG检索并将结果存储到state中，目前只有检索工具，如果后期添加多个工具，修改agent的返回json格式，system_prompt添加详细的工具调用的json结构"""
+    """执行RAG检索并将结果存储到state中，system_prompt添加详细的工具调用的json结构"""
     start_time = time.time()
     ai_action = state['ai_actions'][-1]
     
-    rag_res = await tool_dict['retrieve_vector_store'].ainvoke(ai_action.search_query)
+    rag_res = await retrieve_vector_store.ainvoke(ai_action.search_query)
     
     return {'rag_result': [{'search_query': ai_action.search_query, 'rag_result': rag_res}], 'rag_cnt': 1, 'run_process': [("rag_node", (time.time() - start_time))]}
 

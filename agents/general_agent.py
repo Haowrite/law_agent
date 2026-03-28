@@ -105,8 +105,7 @@ class GeneralAgent(BaseAgent):
         )
 
         system_message = SystemMessage(content=message)
-
-
+        logger.info(f"agent输入内容： {system_message}")
         try:
             # logger.info(f"LLM上下文：{system_message}")
             response = await self.llm.ainvoke([system_message])

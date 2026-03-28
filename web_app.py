@@ -27,7 +27,8 @@ from db_crud.chat_memory_crud import (
     create_chat_session,
     get_user_session_list,
     get_session_detail,
-    delete_chat_session
+    delete_chat_session,
+    validate_session_ownership
 )
 from db_crud.base import init_db, async_engine  # 异步建表函数
 from db_crud.session_manage import m_conversation_manager
@@ -169,7 +170,6 @@ async def index(request: Request):
 async def health_check():
     return JSONResponse({"status": "healthy", "timestamp": time.time()})
 
-
 @app.post("/api/register")
 async def register(req: RegisterRequest):
     if not req.username or not req.password:
@@ -208,11 +208,9 @@ async def chat(req: ChatRequest, user_id: str = Query(...)):
         raise HTTPException(status_code=400, detail="消息长度不能超过2000字符")
     
     user_timestamp = get_time()
-    
     # 校验会话归属
-    try:
-        await get_session_detail(req.session_id, user_id=user_id)
-    except ValueError:
+    is_owner = await validate_session_ownership(req.session_id, user_id)
+    if not is_owner:
         raise HTTPException(status_code=403, detail="会话不存在或无权访问")
 
     session_state = await AGENT.ainvoke(
@@ -223,29 +221,10 @@ async def chat(req: ChatRequest, user_id: str = Query(...)):
         },
         config={'configurable': {'thread_id': req.session_id}}
     )
-
+    ai_timestamp = get_time()
     ai_response = extract_ai_response(session_state)
-    m_conversation_manager.add_message_pair(req.session_id, req.message, ai_response)
-        # ✅ 异步：提交 DB 写入任务（非阻塞！）
-    try:
-        # 提交用户消息
-        await AsyncMySQLChatHistory.add_message(
-            session_id=req.session_id,
-            content=req.message,
-            message_type='user',
-            time_stamp=user_timestamp
-        )
-        
-        # 提交 AI 消息
-        await AsyncMySQLChatHistory.add_message(
-            session_id=req.session_id,
-            content=ai_response,
-            message_type='ai',
-            time_stamp=get_time()  
-        )
-    except Exception as e:
-        # 记录错误但不中断主流程（任务会进入 arq 失败队列）
-        logger.warning(f"⚠️ 提交 DB 任务失败: {e}")
+   
+    await m_conversation_manager.add_message(req.session_id, req.message, ai_response, user_time=user_timestamp, ai_time=ai_timestamp)
     return ChatResponse(response=ai_response, session_id=req.session_id)
 
 

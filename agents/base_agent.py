@@ -45,6 +45,6 @@ class BaseAgent(ABC):
 
     async def get_conversation_context(self, session_id:str) -> str:
         # 使用会话管理器从数据库获取对话上下文
-        return await m_conversation_manager.get_conversation(session_id)
+        return await m_conversation_manager.get_context_for_model(session_id)
         
     

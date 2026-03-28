@@ -11,7 +11,7 @@ from typing import Dict, List, Any
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 
 from utils.agent_thread_pool import PROCESS_POOL 
-from utils.retrieve_process import batch_init_and_retrieve
+from RAG.retrieve_process import batch_init_and_retrieve
 
 # ================= 配置 =================
 INITIAL_BATCH_SIZE = 32   # 初始尝试的批量大小

@@ -21,3 +21,12 @@ class ChatMessage(SQLModel, table=True):
     timestamp: str = Field(default_factory=get_time)
     message_type: str = Field(max_length=10)
     use_token: int = Field(default=0)
+    is_summarized: bool = Field(default=False, description="是否已被摘要")
+
+class SummaryMessage(SQLModel, table=True):
+    """摘要聊天记录表"""
+    summary_id: str = Field(default_factory=get_id, primary_key=True)
+    session_id: str = Field(index=True)
+    summary_content: str = Field(sa_column=sa.Column(sa.Text, nullable=False))
+    timestamp: str = Field(default_factory=get_time)
+    token_count: int = Field(default=0)
