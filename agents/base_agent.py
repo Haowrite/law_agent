@@ -30,7 +30,8 @@ class AgentState(TypedDict):
     customer_query: str = None
     response: str = None
     user_id: str = None
-    run_process: Annotated[List[tuple], operator.add] 
+    retrieved_ids: Annotated[list[str], operator.add]
+    run_process: Annotated[List[tuple], operator.add]
     
 class BaseAgent(ABC):
     def __init__(self, name: str, role: str):

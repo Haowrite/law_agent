@@ -16,6 +16,7 @@ from RAG.retrieve import  retrieve_vector_store
 from model.get_model import get_llm
 from config import MODEL,  TEMPERATURE
 import time
+import json
 
 main_llm = get_llm(MODEL, TEMPERATURE)
 
@@ -50,13 +51,29 @@ def router_edge_node(state: AgentState):
 
 # RAG检索节点
 async def tool_call_node(state: AgentState):
-    """执行RAG检索并将结果存储到state中，system_prompt添加详细的工具调用的json结构"""
+    """执行RAG检索并将结果存储到state中，传入已检索的条文ID进行去重"""
     start_time = time.time()
     ai_action = state['ai_actions'][-1]
-    
-    rag_res = await retrieve_vector_store.ainvoke(ai_action.search_query)
-    
-    return {'rag_result': [{'search_query': ai_action.search_query, 'rag_result': rag_res}], 'rag_cnt': 1, 'run_process': [("rag_node", (time.time() - start_time))]}
+
+    # 从 state 中获取已检索过的条文ID列表，传给检索工具进行去重
+    existing_ids = state.get('retrieved_ids', [])
+
+    rag_res_json = await retrieve_vector_store.ainvoke({
+        "query": ai_action.search_query,
+        "exclude_ids": existing_ids,
+    })
+
+    # 解析返回的 JSON 结果
+    rag_res_data = json.loads(rag_res_json)
+    rag_text = rag_res_data["text"]
+    new_ids = rag_res_data["retrieved_ids"]
+
+    return {
+        'rag_result': [{'search_query': ai_action.search_query, 'rag_result': rag_text}],
+        'rag_cnt': 1,
+        'retrieved_ids': new_ids,  # 新检索到的条文ID，通过 operator.add 累加到 state 中
+        'run_process': [("rag_node", (time.time() - start_time))],
+    }
 
 
 # 最终响应节点

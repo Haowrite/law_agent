@@ -1,9 +1,14 @@
+"""
+- create_vector_store 内部使用 doc_article_crud 维护 MySQL 关系表
+- 函数签名不变，内部逻辑优化
+"""
+
 import time
 import os
 import re
 import uuid
 import json
-import gc  # 新增：用于强制垃圾回收
+import gc
 from typing import Optional, List
 
 from langchain_community.document_loaders import DirectoryLoader, TextLoader, Docx2txtLoader
@@ -11,12 +16,10 @@ from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-# ===== 仅使用 pymilvus（原生）=====
 from pymilvus import (
     connections, Collection, CollectionSchema, FieldSchema,
     DataType, utility
 )
-# =============================
 
 from app_logger import database_logger as logger
 from app_logger import timer
@@ -44,7 +47,6 @@ def _get_collection_schema() -> CollectionSchema:
         FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=65535),
         FieldSchema(name="metadata", dtype=DataType.JSON),
         FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=EMBEDDING_DIM),
-        # 新增：将 filename、article、start_position 作为独立字段，便于表达式检索
         FieldSchema(name="filename", dtype=DataType.VARCHAR, max_length=512),
         FieldSchema(name="article", dtype=DataType.VARCHAR, max_length=256),
         FieldSchema(name="start_position", dtype=DataType.INT64),
@@ -83,7 +85,6 @@ def split_by_article(text: str, source_path: str) -> List[Document]:
     - 带空格格式：第 一 条， 第 一百零一 条
     - 阿拉伯数字：第1条， 第 101 条
     """
-    # 核心修改：在"第"、"数字"、"条"之间加入 \s* 来匹配0个或多个空格
     pattern = r'(第\s*[零一二三四五六七八九十百千]+\s*条)'
 
     parts = re.split(f'({pattern})', text.strip())
@@ -119,22 +120,18 @@ def split_by_article(text: str, source_path: str) -> List[Document]:
 
 def load_documents(source_dir: str) -> List[Document]:
     try:
-        # ===== 【关键修改】增加诊断日志 =====
         logger.info(f"开始加载文档，源目录：{source_dir}")
         logger.info(f"源目录绝对路径：{os.path.abspath(source_dir)}")
 
-        # 手动检查目录是否存在
         if not os.path.isdir(source_dir):
             logger.error(f"提供的路径不是目录或不存在：{source_dir}")
             raise RuntimeError(detail=f"文档目录不存在：{source_dir}")
 
-        # 手动列出目录下所有文件（用于诊断）
         all_files = []
         for root, dirs, files in os.walk(source_dir):
             for file in files:
                 all_files.append(os.path.join(root, file))
         logger.info(f"目录下找到 {len(all_files)} 个文件（所有类型）。前10个：{all_files[:10]}")
-        # ===== 诊断日志结束 =====
 
         docs = []
 
@@ -196,7 +193,6 @@ def compact_clean(text: str) -> str:
 
 def split_documents(documents: List[Document]) -> List[Document]:
     all_article_docs = []
-    # 【修改】chunk_overlap 改为 0
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
         chunk_overlap=0,
@@ -210,25 +206,19 @@ def split_documents(documents: List[Document]) -> List[Document]:
             source_path=doc.metadata["source"]
         )
         for art_doc in article_docs:
-            # 对每条 article 内容做紧凑清洗
             art_doc.page_content = compact_clean(art_doc.page_content)
 
             token_num = count_tokens(art_doc.page_content)
             if token_num <= 512:
-                # 不需要切分 chunk，start_position 为 0
                 art_doc.metadata["start_position"] = 0
                 all_article_docs.append(art_doc)
             else:
-                # 超长条文需要切分 chunk，overlap=0
                 full_text = art_doc.page_content
                 sub_docs = text_splitter.split_documents([art_doc])
-                # 为每个 chunk 计算在原始条文中的起始位置
                 search_start = 0
                 for i, sub_doc in enumerate(sub_docs):
-                    # 计算该 chunk 在原始完整条文中的字符起始位置
                     chunk_pos = full_text.find(sub_doc.page_content, search_start)
                     if chunk_pos == -1:
-                        # 如果精确匹配失败（可能因为清洗差异），使用累计位置
                         chunk_pos = search_start
                     else:
                         search_start = chunk_pos + len(sub_doc.page_content)
@@ -277,12 +267,18 @@ def load_docs_from_cache(cache_path: str = RAG_CACHE_FILE) -> List[Document]:
 
 @timer('知识库向量化')
 def create_vector_store(m_embedding_model, vector_manager: VectorManager, file_path: Optional[str] = None, re_build: bool = False):
+    """
+    构建/加载向量知识库（函数签名不变）
+    重构点：re_build 时使用 doc_article_crud 维护 MySQL 关系表
+    """
+    from db_crud.doc_article_crud import batch_insert_doc_articles, delete_doc_articles_by_path, check_document_exists
+
     try:
         logger.info("=" * 50)
         logger.info(f"开始构建法规条文知识库，路径：{file_path} | re_build={re_build}")
         logger.info("=" * 50)
 
-        # === 连接 Embedded Milvus ===
+        # === 连接 Milvus ===
         connections.connect(uri=MILVUS_URL)
         collection_name = VECTOR_COLLECTION_NAME
 
@@ -323,14 +319,12 @@ def create_vector_store(m_embedding_model, vector_manager: VectorManager, file_p
             for doc in split_docs:
                 doc.metadata["id"] = str(uuid.uuid4())
                 doc.metadata["token_num"] = count_tokens(doc.page_content)
-                # 确保 start_position 存在
                 if "start_position" not in doc.metadata:
                     doc.metadata["start_position"] = 0
 
             ids = [doc.metadata["id"] for doc in split_docs]
             texts = [doc.page_content for doc in split_docs]
             metadatas = [doc.metadata for doc in split_docs]
-            # 新增：提取独立字段
             filenames = [doc.metadata.get("filename", "") for doc in split_docs]
             articles = [doc.metadata.get("article", "") for doc in split_docs]
             start_positions = [doc.metadata.get("start_position", 0) for doc in split_docs]
@@ -367,7 +361,6 @@ def create_vector_store(m_embedding_model, vector_manager: VectorManager, file_p
                     texts[i:end_idx],
                     metadatas[i:end_idx],
                     vectors[i:end_idx],
-                    # 新增：插入独立字段
                     filenames[i:end_idx],
                     articles[i:end_idx],
                     start_positions[i:end_idx],
@@ -377,6 +370,29 @@ def create_vector_store(m_embedding_model, vector_manager: VectorManager, file_p
 
             collection.flush()
             logger.info(f"全部 {total} 条数据已成功插入 Milvus")
+
+            # === 同步写入 MySQL doc_article 表 ===
+            # 按 source（文档路径）分组，写入关系表
+            doc_path_to_ids = {}
+            for doc in split_docs:
+                source = doc.metadata.get("source", "")
+                abs_path = os.path.abspath(source) if source else ""
+                if abs_path not in doc_path_to_ids:
+                    doc_path_to_ids[abs_path] = []
+                doc_path_to_ids[abs_path].append(doc.metadata["id"])
+
+            for abs_path, aid_list in doc_path_to_ids.items():
+                if not abs_path:
+                    continue
+                # 先清除旧记录（重建场景）
+                try:
+                    delete_doc_articles_by_path(abs_path)
+                except Exception:
+                    pass
+                doc_id = str(uuid.uuid4())
+                batch_insert_doc_articles(abs_path, doc_id, aid_list)
+
+            logger.info(f"MySQL doc_article 表同步完成，共 {len(doc_path_to_ids)} 个文档")
 
             # === 保存 split_docs 到缓存文件 ===
             save_docs_to_cache(split_docs, RAG_CACHE_FILE)
@@ -422,7 +438,6 @@ def create_vector_store(m_embedding_model, vector_manager: VectorManager, file_p
                         else:
                             temp_token_nums.append(meta["token_num"])
 
-                        # 确保 metadata 中有 filename, article, start_position
                         if "filename" not in doc.metadata:
                             doc.metadata["filename"] = entity.get("filename", "")
                         if "article" not in doc.metadata:
@@ -457,7 +472,7 @@ def create_vector_store(m_embedding_model, vector_manager: VectorManager, file_p
         # 构建 BM25 (统一逻辑)
         logger.info("正在初始化 BM25 检索器...")
         vector_manager.bm25_retriever = BM25Retriever.from_documents(final_docs, preprocess_func=chinese_tokenizer)
-        vector_manager.bm25_retriever.k = 10
+        vector_manager.bm25_retriever.k = 20
 
         logger.info(f"最终索引：{len(final_docs)} 条 | 平均 token 长度：{avg_size} | 最大 token 长度：{max_size}")
         logger.info("=" * 50)

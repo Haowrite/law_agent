@@ -1,10 +1,12 @@
-# base.py
 from config import DATABASE_URL
 from sqlmodel import SQLModel
 from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, Session
 from app_logger import database_logger as logger
 
-# 创建异步引擎（不立即建表）
+# ========== 异步引擎（FastAPI 主进程使用） ==========
+
 def get_async_engine():
     try:
         engine = create_async_engine(DATABASE_URL, echo=False, pool_pre_ping=True, pool_size=20, max_overflow=30, pool_recycle=3600)
@@ -15,6 +17,49 @@ def get_async_engine():
         raise
 
 async_engine = get_async_engine()
+
+
+# ========== 同步引擎（子进程使用，文档CRUD等） ==========
+# 使用进程级单例：每个子进程只创建一次 engine 和 sessionmaker
+
+_sync_engine = None
+_SyncSessionLocal = None
+
+
+def _make_sync_url(async_url: str) -> str:
+    """将 async 数据库 URL 转换为 sync URL（如 mysql+aiomysql -> mysql+pymysql）"""
+    return (
+        async_url
+        .replace("mysql+aiomysql", "mysql+pymysql")
+        .replace("mysql+asyncmy", "mysql+pymysql")
+        .replace("sqlite+aiosqlite", "sqlite")
+    )
+
+
+def get_sync_engine():
+    """获取同步引擎（进程级单例，每个进程只创建一次）"""
+    global _sync_engine
+    if _sync_engine is None:
+        try:
+            sync_url = _make_sync_url(DATABASE_URL)
+            _sync_engine = create_engine(
+                sync_url, echo=False, pool_pre_ping=True,
+                pool_size=10, max_overflow=20, pool_recycle=3600
+            )
+            logger.info(f"同步数据库引擎创建成功: {sync_url}")
+        except Exception as e:
+            logger.error(f"创建同步引擎失败: {e}")
+            raise
+    return _sync_engine
+
+
+def get_sync_session() -> Session:
+    """获取同步 Session（供子进程中使用，复用进程级单例 engine）"""
+    global _SyncSessionLocal
+    if _SyncSessionLocal is None:
+        engine = get_sync_engine()
+        _SyncSessionLocal = sessionmaker(bind=engine, class_=Session, expire_on_commit=False)
+    return _SyncSessionLocal()
 
 
 # 异步初始化数据库表（应在应用启动时调用）

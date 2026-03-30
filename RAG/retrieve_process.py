@@ -1,7 +1,10 @@
-# utils/retrieve_process.py
+"""
+- 保留原有 batch_init_and_retrieve / init_and_retrieve 接口（签名不变）
+- 新增 add_document_in_process / delete_document_in_process 供子进程执行文档 CRUD
+"""
 
 from RAG.vector_doc import create_vector_store, VectorManager
-from RAG.base import embeddings_model, reranker_model  # 新增 reranker_model
+from RAG.base import embeddings_model, reranker_model
 from app_logger import database_logger as logger
 import json
 from config import RE_BUILD, FILE_PATH
@@ -11,7 +14,7 @@ from typing import List, Any, Tuple, Dict
 # 全局变量 (在每个子进程中独立存在)
 _EMBEDDING_MODEL = None
 _VECTORMANAGER: VectorManager = None
-_RERANKER_MODEL = None  # 新增 Reranker 全局变量
+_RERANKER_MODEL = None
 
 
 def get_embedding_model():
@@ -50,7 +53,73 @@ def init_vector_manager_once():
     return _VECTORMANAGER
 
 
-def rrf_fusion_optimized(faiss_results, bm25_results, k=60, faiss_weight=0.7, bm25_weight=0.3, rrf_top_k=20):
+# ========== 文档 CRUD（在子进程中执行） ==========
+
+def add_document_in_process(doc_abs_path: str) -> dict:
+    """
+    在子进程中新增文档（确保 embedding 模型已加载）
+    返回: {"inserted_count": int, "message": str}
+    """
+    from db_crud.doc_article_crud import add_document
+
+    manager = init_vector_manager_once()
+    model = get_embedding_model()
+
+    result = add_document(
+        doc_abs_path=doc_abs_path,
+        embedding_model=model,
+        vector_manager=manager,
+    )
+    return result
+
+
+def delete_document_in_process(doc_abs_path: str) -> dict:
+    """
+    在子进程中删除文档
+    返回: {"deleted_count": int, "message": str}
+    """
+    from db_crud.doc_article_crud import delete_document, _rebuild_bm25
+    from pymilvus import connections, Collection
+    from config import MILVUS_URL, VECTOR_COLLECTION_NAME
+
+    manager = init_vector_manager_once()
+
+    result = delete_document(doc_abs_path=doc_abs_path)
+
+    # 删除后重建 BM25
+    if result.get("deleted_count", 0) > 0 and manager is not None:
+        try:
+            connections.connect(uri=MILVUS_URL)
+            collection = Collection(VECTOR_COLLECTION_NAME)
+            collection.load()
+            _rebuild_bm25(manager, collection)
+        except Exception as e:
+            logger.warning(f"删除后重建 BM25 失败: {e}")
+
+    return result
+
+
+# ========== 以下为检索逻辑 ==========
+
+def _filter_docs_by_exclude_ids(docs: list, exclude_ids: set) -> list:
+    """
+    根据已检索条文ID集合，从初步检索结果中剔除已检索过的条文。
+    条文ID格式: "{filename}::{base_article}"
+    """
+    if not exclude_ids:
+        return docs
+    filtered = []
+    for doc in docs:
+        filename = doc.metadata.get("filename", "")
+        article = doc.metadata.get("article", "")
+        base_article = article.split("_part")[0] if "_part" in article else article
+        article_id = f"{filename}::{base_article}"
+        if article_id not in exclude_ids:
+            filtered.append(doc)
+    return filtered
+
+
+def rrf_fusion_optimized(faiss_results, bm25_results, k=60, faiss_weight=0.7, bm25_weight=0.3, rrf_top_k=10):
     """
     RRF 融合优化版：先筛选出 rrf_top_k 条结果，供后续 Reranker 重排
     """
@@ -80,68 +149,47 @@ def rrf_fusion_optimized(faiss_results, bm25_results, k=60, faiss_weight=0.7, bm
         total_score = faiss_score + bm25_score
         scored_docs.append((total_score, doc))
 
-    # RRF 阶段先筛选出 top N 条（默认20条），减少后续 Reranker 计算量
     scored_docs.sort(key=lambda x: x[0], reverse=True)
     return scored_docs[:rrf_top_k]
 
 
-def reranker_reorder(query: str, candidate_docs, max_results=10):
+def reranker_reorder(query: str, candidate_docs, max_results=5):
     """
     使用 Reranker 模型对候选文档重排
-    :param query: 用户查询
-    :param candidate_docs: RRF 筛选后的候选文档列表 [(rrf_score, doc), ...]
-    :param max_results: 最终返回的文档数量
-    :return: 重排后的文档列表 [(reranker_score, doc), ...]
     """
     if not candidate_docs:
         return []
 
-    # 获取 Reranker 模型
     reranker = get_reranker_model()
 
-    # 构造 [query, passage] 对
     query_passage_pairs = []
     doc_list = [doc for _, doc in candidate_docs]
     for doc in doc_list:
         query_passage_pairs.append([query, doc.page_content])
 
-    # 计算 Reranker 分数（归一化到 0-1）
     scores = reranker.compute_score(query_passage_pairs, normalize=True)
 
-    # 结合分数和文档排序
     scored_docs = list(zip(scores, doc_list))
     scored_docs.sort(key=lambda x: x[0], reverse=True)
 
-    # 截取最终需要的数量
     final_docs = scored_docs[:max_results]
-
     return final_docs
 
 
-def fetch_full_articles_from_milvus(collection, reranked_docs: List[Tuple[float, Any]]) -> str:
+def fetch_full_articles_from_milvus(collection, reranked_docs: List[Tuple[float, Any]]) -> Tuple[str, List[str]]:
     """
     根据 Reranker 排序结果，从 Milvus 中检索完整条文并拼接返回。
-
-    流程：
-    1. 从 reranked_docs 中提取唯一的 (filename, article) 对
-    2. 对每个 (filename, article) 对，使用 Milvus 表达式检索所有对应的 chunk
-    3. 按 start_position 排序并拼接成完整条文
-    4. 去重后返回拼接结果
-
-    :param collection: Milvus Collection 对象
-    :param reranked_docs: Reranker 排序后的文档列表 [(score, doc), ...]
-    :return: 拼接后的完整条文文本
+    同时返回本次检索到的条文 ID 列表，用于后续去重。
+    返回: (拼接后的条文文本, 本次检索到的条文ID列表)
     """
     if not reranked_docs:
-        return ""
+        return "", []
 
-    # 1. 提取唯一的 (filename, article) 对，保持 reranker 排序顺序
     seen_keys = set()
-    unique_article_keys = []  # [(filename, article), ...] 保持排序顺序
+    unique_article_keys = []
     for _, doc in reranked_docs:
         filename = doc.metadata.get("filename", "")
         article = doc.metadata.get("article", "")
-        # 如果 article 含有 _part 后缀（如 "第一条_part1"），提取原始条号
         base_article = article.split("_part")[0] if "_part" in article else article
         key = (filename, base_article)
         if key not in seen_keys:
@@ -150,24 +198,19 @@ def fetch_full_articles_from_milvus(collection, reranked_docs: List[Tuple[float,
 
     logger.info(f"Reranker 结果涉及 {len(unique_article_keys)} 个唯一条文，开始从 Milvus 检索完整内容...")
 
-    # 2. 对每个唯一 (filename, article) 对，从 Milvus 查询所有相关 chunk
-    full_articles = []  # [(filename, article, full_text), ...]
+    full_articles = []
 
     for filename, base_article in unique_article_keys:
-        # 构造 Milvus 表达式：精确匹配 filename，article 前缀匹配（兼容 _part 后缀）
-        # 使用 filename 字段和 article 字段进行表达式检索
-        # article 字段可能是 "第一条" 或 "第一条_part1"，需要匹配所有以 base_article 开头的
         escaped_filename = filename.replace('"', '\\"')
         escaped_article = base_article.replace('"', '\\"')
 
-        # 精确匹配 filename，article 以 base_article 开头（使用 prefix 或 like）
         expr = f'filename == "{escaped_filename}" and (article == "{escaped_article}" or article like "{escaped_article}_part%")'
 
         try:
             results = collection.query(
                 expr=expr,
                 output_fields=["text", "article", "start_position", "metadata"],
-                limit=100  # 单条法规的 chunk 数不会太多
+                limit=100
             )
         except Exception as e:
             logger.warning(f"Milvus 查询失败 (filename={filename}, article={base_article}): {e}")
@@ -177,7 +220,6 @@ def fetch_full_articles_from_milvus(collection, reranked_docs: List[Tuple[float,
             logger.warning(f"Milvus 未找到条文: filename={filename}, article={base_article}")
             continue
 
-        # 3. 去重（按 text 内容去重）并按 start_position 排序
         seen_texts = set()
         unique_chunks = []
         for r in results:
@@ -187,43 +229,43 @@ def fetch_full_articles_from_milvus(collection, reranked_docs: List[Tuple[float,
                 start_pos = r.get("start_position", 0)
                 unique_chunks.append((start_pos, text))
 
-        # 按 start_position 升序排列
         unique_chunks.sort(key=lambda x: x[0])
 
-        # 4. 拼接成完整条文
         full_text = "".join([chunk_text for _, chunk_text in unique_chunks])
         full_articles.append((filename, base_article, full_text))
         logger.debug(f"条文拼接完成: {filename} {base_article} -> {len(unique_chunks)} 个 chunk，总长 {len(full_text)} 字符")
 
-    # 5. 构造最终返回文本
+    # 收集本次检索到的条文ID
+    new_retrieved_ids = []
     contents = []
     for filename, article, full_text in full_articles:
+        article_id = f"{filename}::{article}"
+        new_retrieved_ids.append(article_id)
         contents.append(
             f"{full_text}（法律来源：{filename}{article}）"
         )
 
     result_text = "\n".join(contents)
-    logger.info(f"最终返回 {len(full_articles)} 条完整条文")
-    return result_text
+    logger.info(f"最终返回 {len(full_articles)} 条完整条文，新增 {len(new_retrieved_ids)} 个条文ID")
+    return result_text, new_retrieved_ids
 
 
-def init_and_retrieve(query: str) -> str:
+def init_and_retrieve(query: str, exclude_ids: set = None) -> Tuple[str, List[str]]:
     """
     保留原有单条接口，供非批处理场景或测试使用。
-    内部调用批量逻辑的单条版本。
+    返回: (检索结果文本, 本次检索到的条文ID列表)
     """
-    results = batch_init_and_retrieve([query])
+    results = batch_init_and_retrieve([query], exclude_ids_list=[exclude_ids])
     return results[0]
 
 
-def batch_init_and_retrieve(queries: List[str]) -> List[str]:
+def batch_init_and_retrieve(queries: List[str], exclude_ids_list: List[set] = None) -> List[Tuple[str, List[str]]]:
     """
-    批量处理核心函数：
-    1. 批量 Embedding (GPU 加速)
-    2. 批量 Vector Search (Milvus 加速)
-    3. 循环处理 BM25 和 RRF (CPU 密集)
-    4. Reranker 重排
-    5. 根据 Reranker 结果从 Milvus 检索完整条文并拼接返回
+    批量处理核心函数
+    参数:
+        queries: 查询列表
+        exclude_ids_list: 每个查询对应的已检索条文ID集合，用于去重。长度需与 queries 一致，为 None 时不做排除。
+    返回: List[Tuple[str, List[str]]]，每个元素为 (检索结果文本, 本次新增的条文ID列表)
     """
     manager = init_vector_manager_once()
     model = get_embedding_model()
@@ -231,17 +273,20 @@ def batch_init_and_retrieve(queries: List[str]) -> List[str]:
     if not queries:
         return []
 
-    # 1. 批量 Embedding (关键优化点：一次 GPU 推理)
+    if exclude_ids_list is None:
+        exclude_ids_list = [None] * len(queries)
+
+    # 1. 批量 Embedding
     query_vectors = model.embed_documents(queries)
 
-    # 2. 批量 Vector Search (关键优化点：一次网络 IO，一次索引扫描)
+    # 2. 批量 Vector Search
     search_params = {"metric_type": "L2", "params": {"nprobe": 20}}
 
     milvus_results = manager.vector_store.search(
         data=query_vectors,
         anns_field="vector",
         param=search_params,
-        limit=10,
+        limit=20,
         output_fields=["text", "metadata", "filename", "article", "start_position"]
     )
 
@@ -249,7 +294,6 @@ def batch_init_and_retrieve(queries: List[str]) -> List[str]:
 
     # 3. 后处理 (BM25 + RRF + Reranker + 完整条文检索)
     for i, query in enumerate(queries):
-        # 解析 Milvus 结果
         hits = milvus_results[i]
         faiss_docs = []
         for hit in hits:
@@ -260,7 +304,6 @@ def batch_init_and_retrieve(queries: List[str]) -> List[str]:
                 except Exception:
                     metadata = {}
 
-            # 确保 metadata 中包含 filename, article, start_position
             if "filename" not in metadata:
                 metadata["filename"] = hit.entity.get("filename", "")
             if "article" not in metadata:
@@ -274,18 +317,23 @@ def batch_init_and_retrieve(queries: List[str]) -> List[str]:
             })()
             faiss_docs.append(doc)
 
-        # 执行 BM25 (单条)
         bm25_docs = manager.bm25_retriever.invoke(query)
 
-        # RRF 融合（筛选出候选集）
+        # 在 RRF 融合之前，根据已检索条文ID过滤掉重复条文
+        current_exclude_ids = exclude_ids_list[i]
+        if current_exclude_ids:
+            orig_faiss_count = len(faiss_docs)
+            orig_bm25_count = len(bm25_docs)
+            faiss_docs = _filter_docs_by_exclude_ids(faiss_docs, current_exclude_ids)
+            bm25_docs = _filter_docs_by_exclude_ids(bm25_docs, current_exclude_ids)
+            logger.info(f"去重过滤: faiss {orig_faiss_count}->{len(faiss_docs)}, bm25 {orig_bm25_count}->{len(bm25_docs)}, 排除 {len(current_exclude_ids)} 个已检索条文")
+
         rrf_candidates = rrf_fusion_optimized(faiss_docs, bm25_docs, rrf_top_k=10)
 
-        # Reranker 重排（返回排序后的文档列表）
         reranked_docs = reranker_reorder(query, rrf_candidates, max_results=5)
 
-        # 【核心修改】从 Milvus 检索完整条文并拼接
-        fused_text = fetch_full_articles_from_milvus(manager.vector_store, reranked_docs)
+        fused_text, new_ids = fetch_full_articles_from_milvus(manager.vector_store, reranked_docs)
 
-        final_results.append(fused_text)
+        final_results.append((fused_text, new_ids))
 
     return final_results

@@ -1,4 +1,3 @@
-# retrieve.py
 from os import wait
 
 from langchain_core.tools import tool
@@ -7,7 +6,8 @@ import asyncio
 import uuid
 import time
 import torch # 需要引入 torch 来清理缓存
-from typing import Dict, List, Any
+import json as _json
+from typing import Dict, List, Any, Optional, Set
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 
 from utils.agent_thread_pool import PROCESS_POOL 
@@ -23,10 +23,11 @@ _request_queue = asyncio.Queue()
 _pending_futures: Dict[str, asyncio.Future] = {}
 _processor_task = None
 
-class vector_store_args(BaseModel): 
+class vector_store_args(BaseModel):
     query: str = Field(..., description="查询的内容")
+    exclude_ids: list = Field(default_factory=list, description="已检索过的条文ID列表，用于去重")
 
-def _run_batch_with_fallback(queries: List[str]) -> List[str]:
+def _run_batch_with_fallback(queries: List[str], exclude_ids_list: List[Optional[set]] = None) -> List[Any]:
     """
     【核心优化】带显存保护机制的批量执行函数
     如果显存不足，自动将批次减半重试，直到成功或降至最小批次
@@ -34,53 +35,45 @@ def _run_batch_with_fallback(queries: List[str]) -> List[str]:
     current_batch_size = INITIAL_BATCH_SIZE
     work_queue = list(queries) # 待处理的查询列表
     final_results = [None] * len(queries) # 预分配结果列表，保持顺序
-    
-    # 我们需要记录原始索引，以便将结果放回正确的位置
-    # 但为了简化，这里采用一种策略：
-    # 如果整体批次失败，我们将其拆分为更小的块递归处理
-    
-    def process_chunk(chunk_queries: List[str], start_index: int):
+
+    if exclude_ids_list is None:
+        exclude_ids_list = [None] * len(queries)
+
+    def process_chunk(chunk_queries: List[str], chunk_exclude_ids: List[Optional[set]], start_index: int):
         """尝试处理一个切片，如果 OOM 则递归拆分"""
         if not chunk_queries:
             return
-            
+
         try:
-            # 尝试执行
-            # 注意：这里需要 modify retrieve_process.py 让它支持处理切片并返回对应结果
-            # 或者我们在这里循环调用单条 (效率低但保底)
-            # 为了利用现有代码，我们假设 batch_init_and_retrieve 能处理任意长度列表
-            
-            results = batch_init_and_retrieve(chunk_queries)
-            
+            results = batch_init_and_retrieve(chunk_queries, exclude_ids_list=chunk_exclude_ids)
+
             # 填入结果
             for i, res in enumerate(results):
                 final_results[start_index + i] = res
-                
+
         except RuntimeError as e:
             if "CUDA out of memory" in str(e) or "cuDNN error" in str(e):
                 # 显存不足警告
                 print(f"⚠️  Detect OOM! Batch size {len(chunk_queries)} too large. Splitting...")
-                
+
                 # 强制清理 PyTorch 缓存 (关键步骤)
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-                
+
                 # 递归拆分：将当前批次一分为二
                 mid = len(chunk_queries) // 2
                 if mid == 0:
-                    # 如果已经是一个一个了还 OOM，那是真的没办法了，抛出异常
                     raise e
-                
+
                 # 处理前半部分
-                process_chunk(chunk_queries[:mid], start_index)
+                process_chunk(chunk_queries[:mid], chunk_exclude_ids[:mid], start_index)
                 # 处理后半部分
-                process_chunk(chunk_queries[mid:], start_index + mid)
+                process_chunk(chunk_queries[mid:], chunk_exclude_ids[mid:], start_index + mid)
             else:
-                # 其他错误直接抛出
                 raise e
 
     # 开始处理整个列表
-    process_chunk(work_queue, 0)
+    process_chunk(work_queue, list(exclude_ids_list), 0)
     
     return final_results
 
@@ -115,14 +108,15 @@ async def _batch_processor_loop():
                 
                 request_ids = [item['id'] for item in current_batch]
                 queries = [item['query'] for item in current_batch]
-                
+                exclude_ids_list = [item.get('exclude_ids') for item in current_batch]
+
                 loop = asyncio.get_running_loop()
-                
+
                 try:
                     # 使用带 fallback 的包装函数
                     results = await loop.run_in_executor(
-                        None, 
-                        lambda: PROCESS_POOL.submit(_run_batch_with_fallback, queries).result()
+                        None,
+                        lambda: PROCESS_POOL.submit(_run_batch_with_fallback, queries, exclude_ids_list).result()
                     )
                     
                     for i, req_id in enumerate(request_ids):
@@ -150,23 +144,35 @@ def _ensure_processor_started():
 
 @tool(
     "retrieve_vector_store",
-    description="根据输入的查询内容在法律知识库进行相关性检索...",
+    description="根据输入的查询内容在法律知识库进行相关性检索，支持传入已检索条文ID进行去重...",
     args_schema=vector_store_args,
 )
-async def retrieve_vector_store(query: str) -> str:
+async def retrieve_vector_store(query: str, exclude_ids: list = None) -> str:
+    """
+    返回 JSON 字符串，格式: {"text": "检索结果文本", "retrieved_ids": ["id1", "id2", ...]}
+    """
     _ensure_processor_started()
-    
+
+    # 将 exclude_ids 列表转为 set 以便快速查找
+    exclude_ids_set = set(exclude_ids) if exclude_ids else None
+
     request_id = str(uuid.uuid4())
     loop = asyncio.get_running_loop()
-    
+
     future = loop.create_future()
     _pending_futures[request_id] = future
-    
-    await _request_queue.put({"id": request_id, "query": query})
-    
+
+    await _request_queue.put({
+        "id": request_id,
+        "query": query,
+        "exclude_ids": exclude_ids_set,
+    })
+
     try:
         result = await asyncio.wait_for(future, timeout=60.0)
-        return result
+        # result 是 (text, new_ids) 的元组
+        text, new_ids = result
+        return _json.dumps({"text": text, "retrieved_ids": new_ids}, ensure_ascii=False)
     except asyncio.TimeoutError:
         if request_id in _pending_futures:
             del _pending_futures[request_id]
