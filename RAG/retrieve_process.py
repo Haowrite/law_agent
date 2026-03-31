@@ -119,7 +119,7 @@ def _filter_docs_by_exclude_ids(docs: list, exclude_ids: set) -> list:
     return filtered
 
 
-def rrf_fusion_optimized(faiss_results, bm25_results, k=60, faiss_weight=0.7, bm25_weight=0.3, rrf_top_k=10):
+def rrf_fusion_optimized(faiss_results, bm25_results, k=60, faiss_weight=0.7, bm25_weight=0.3, rrf_top_k=20):
     """
     RRF 融合优化版：先筛选出 rrf_top_k 条结果，供后续 Reranker 重排
     """
@@ -153,7 +153,7 @@ def rrf_fusion_optimized(faiss_results, bm25_results, k=60, faiss_weight=0.7, bm
     return scored_docs[:rrf_top_k]
 
 
-def reranker_reorder(query: str, candidate_docs, max_results=5):
+def reranker_reorder(query: str, candidate_docs, max_results=6):
     """
     使用 Reranker 模型对候选文档重排
     """
@@ -330,7 +330,7 @@ def batch_init_and_retrieve(queries: List[str], exclude_ids_list: List[set] = No
 
         rrf_candidates = rrf_fusion_optimized(faiss_docs, bm25_docs, rrf_top_k=10)
 
-        reranked_docs = reranker_reorder(query, rrf_candidates, max_results=5)
+        reranked_docs = reranker_reorder(query, rrf_candidates, max_results=6)
 
         fused_text, new_ids = fetch_full_articles_from_milvus(manager.vector_store, reranked_docs)
 

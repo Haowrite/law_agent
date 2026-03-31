@@ -74,7 +74,7 @@ D. 禁止使用"根据相关法律规定"等模糊引用，每一处引用都必
     search_query = ""
 
 第四步：如果 retrieved_content 不足（为空或无关）：
-    - 若 retrieval_count >= 5：
+    - 若 retrieval_count >= 3：
         enable_answer = True
         response = "抱歉，经过多次检索，未能找到与您问题直接相关的法律依据。建议您详细描述具体法律场景、涉及的主体或相关法条，以便我们更好地帮助您；或直接咨询专业律师获取准确的法律意见。"
         search_query = ""
@@ -82,7 +82,7 @@ D. 禁止使用"根据相关法律规定"等模糊引用，每一处引用都必
         enable_answer = False
         response = ""
         search_query = user_question
-    - 若 1 <= retrieval_count < 5：
+    - 若 1 <= retrieval_count < 3：
         enable_answer = False
         response = ""
         search_query = 基于当前上下文对 user_question 的合理改写或者提出一个新的检索问题，目标是提升法律相关性和多方面检索，可增加法律关键词、主体、行为或场景细节，但该问题要能契合用户诉求。
