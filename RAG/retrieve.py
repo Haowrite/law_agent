@@ -88,7 +88,7 @@ async def _batch_processor_loop():
                 if len(buffer) == 0:
                     wait_time = None  # 如果缓冲区为空，等待直到有新请求
                 else:
-                    wait_time = max(5, BATCH_TIMEOUT - (time.time() - last_flush_time))
+                    wait_time = max(0.05, BATCH_TIMEOUT - (time.time() - last_flush_time))
                 item = await asyncio.wait_for(_request_queue.get(), timeout=wait_time)
                 if len(buffer) == 0:
                     last_flush_time = time.time()  # 新批次开始，重置计时 

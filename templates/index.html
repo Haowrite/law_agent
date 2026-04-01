@@ -382,8 +382,19 @@ body{
     </div>
     <div class="auth-fields">
       <div class="field-group">
-        <label for="loginUsername">用户名</label>
-        <input type="text" id="loginUsername" placeholder="请输入用户名" autocomplete="username" />
+        <label for="loginUsername" id="labelUsername">用户名 / 邮箱</label>
+        <input type="text" id="loginUsername" placeholder="请输入用户名或邮箱" autocomplete="username" />
+      </div>
+      <div class="field-group" id="emailGroup" style="display:none">
+        <label for="regEmail">邮箱</label>
+        <input type="email" id="regEmail" placeholder="请输入邮箱" autocomplete="email" />
+      </div>
+      <div class="field-group" id="codeGroup" style="display:none">
+        <label for="regCode">验证码</label>
+        <div style="display:flex;gap:8px">
+          <input type="text" id="regCode" placeholder="请输入验证码" maxlength="6" style="flex:1" autocomplete="one-time-code" />
+          <button type="button" id="sendCodeBtn" class="btn-primary" style="width:auto;padding:11px 16px;margin-top:0;white-space:nowrap;font-size:.82em" onclick="handleSendCode()">发送验证码</button>
+        </div>
       </div>
       <div class="field-group">
         <label for="loginPassword">密码</label>
@@ -506,6 +517,10 @@ function toggleAuthMode() {
   const btn = document.getElementById('authActionBtn');
   const switchText = document.getElementById('authSwitchText');
   const msg = document.getElementById('authMessage');
+  const emailGroup = document.getElementById('emailGroup');
+  const codeGroup = document.getElementById('codeGroup');
+  const labelUsername = document.getElementById('labelUsername');
+  const loginUsername = document.getElementById('loginUsername');
   msg.textContent = '';
   msg.className = 'auth-message';
 
@@ -515,12 +530,20 @@ function toggleAuthMode() {
     subtitle.textContent = '注册后即可开始咨询';
     btn.textContent = '注册';
     switchText.textContent = '已有账号？登录';
+    emailGroup.style.display = '';
+    codeGroup.style.display = '';
+    labelUsername.textContent = '用户名';
+    loginUsername.placeholder = '请输入用户名';
   } else {
     authMode = 'login';
     title.textContent = 'AI 法律助手';
     subtitle.textContent = '登录以开始咨询';
     btn.textContent = '登录';
     switchText.textContent = '没有账号？注册';
+    emailGroup.style.display = 'none';
+    codeGroup.style.display = 'none';
+    labelUsername.textContent = '用户名 / 邮箱';
+    loginUsername.placeholder = '请输入用户名或邮箱';
   }
 }
 
@@ -530,18 +553,18 @@ async function handleAuth() {
 }
 
 async function login() {
-  const username = document.getElementById('loginUsername').value.trim();
+  const account = document.getElementById('loginUsername').value.trim();
   const password = document.getElementById('loginPassword').value;
   const msg = document.getElementById('authMessage');
   msg.className = 'auth-message';
 
-  if (!username || !password) { msg.textContent = '请输入用户名和密码'; return; }
+  if (!account || !password) { msg.textContent = '请输入用户名/邮箱和密码'; return; }
 
   try {
     const res = await fetch('/api/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password })
+      body: JSON.stringify({ account, password })
     });
     const data = await res.json();
     if (res.ok && data.user_id) {
@@ -565,18 +588,22 @@ async function login() {
 
 async function register() {
   const username = document.getElementById('loginUsername').value.trim();
+  const email = document.getElementById('regEmail').value.trim();
+  const code = document.getElementById('regCode').value.trim();
   const password = document.getElementById('loginPassword').value;
   const msg = document.getElementById('authMessage');
   msg.className = 'auth-message';
 
   if (!username || !password) { msg.textContent = '请输入用户名和密码'; return; }
+  if (!email) { msg.textContent = '请输入邮箱'; return; }
+  if (!code) { msg.textContent = '请输入验证码'; return; }
   if (password.length < 6) { msg.textContent = '密码至少 6 位'; return; }
 
   try {
     const res = await fetch('/api/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password })
+      body: JSON.stringify({ username, password, email, code })
     });
     const data = await res.json();
     if (res.ok && data.user_id) {
@@ -589,6 +616,63 @@ async function register() {
   } catch (e) {
     msg.textContent = '网络错误，请检查服务是否启动';
   }
+}
+
+// ============================================================
+//  SEND VERIFICATION CODE
+// ============================================================
+let codeCooldown = 0;
+let codeCooldownTimer = null;
+
+async function handleSendCode() {
+  const email = document.getElementById('regEmail').value.trim();
+  const msg = document.getElementById('authMessage');
+  const btn = document.getElementById('sendCodeBtn');
+  msg.className = 'auth-message';
+
+  if (!email) { msg.textContent = '请先输入邮箱'; return; }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { msg.textContent = '邮箱格式不正确'; return; }
+  if (codeCooldown > 0) return;
+
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/send_code', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      msg.textContent = '验证码已发送，请查收邮箱';
+      msg.className = 'auth-message success';
+      startCodeCooldown(60);
+    } else {
+      msg.textContent = data.detail || '发送失败';
+      btn.disabled = false;
+    }
+  } catch (e) {
+    msg.textContent = '网络错误，请检查服务是否启动';
+    btn.disabled = false;
+  }
+}
+
+function startCodeCooldown(seconds) {
+  const btn = document.getElementById('sendCodeBtn');
+  codeCooldown = seconds;
+  btn.disabled = true;
+  btn.textContent = `${codeCooldown}s`;
+  codeCooldownTimer = setInterval(() => {
+    codeCooldown--;
+    if (codeCooldown <= 0) {
+      clearInterval(codeCooldownTimer);
+      codeCooldownTimer = null;
+      codeCooldown = 0;
+      btn.disabled = false;
+      btn.textContent = '发送验证码';
+    } else {
+      btn.textContent = `${codeCooldown}s`;
+    }
+  }, 1000);
 }
 
 function logout() {
@@ -755,6 +839,7 @@ async function sendMessage() {
 
   let fullText = '';
   let streamSuccess = false;
+  let wasReallyStreamed = false;
 
   try {
     // Try streaming endpoint first
@@ -801,6 +886,7 @@ async function sendMessage() {
         if (streamSuccess) break;
       }
       streamSuccess = true;
+      wasReallyStreamed = true;
     } else if (res.ok) {
       // Non-streaming JSON response — fallback
       const data = await res.json();
@@ -834,9 +920,21 @@ async function sendMessage() {
   }
 
   // Finalize
-  finalizeStreamBubble(bubble, fullText);
-  isStreaming = false;
-  updateSendBtn();
+  if (fullText && wasReallyStreamed) {
+    // Already rendered progressively, just remove cursor
+    finalizeStreamBubble(bubble, fullText);
+    isStreaming = false;
+    updateSendBtn();
+  } else if (fullText) {
+    // Non-streamed response: simulate typewriter effect
+    await typewriterReveal(bubble, fullText);
+    isStreaming = false;
+    updateSendBtn();
+  } else {
+    finalizeStreamBubble(bubble, '(空回复)');
+    isStreaming = false;
+    updateSendBtn();
+  }
   refreshSessionList();
 }
 
@@ -874,6 +972,54 @@ function finalizeStreamBubble(bubble, text) {
     bubble.textContent = text;
   }
   bubble.classList.remove('streaming-cursor');
+}
+
+/**
+ * Typewriter effect: reveals text character-by-character when the full
+ * response arrives at once (non-streaming fallback). Uses variable speed —
+ * faster for longer texts, with small pauses at punctuation for natural feel.
+ */
+async function typewriterReveal(bubble, fullText) {
+  const len = fullText.length;
+  // Base interval: 15–35ms per char, faster for long texts
+  const baseInterval = len > 800 ? 10 : len > 300 ? 18 : 28;
+  // Chunk size: reveal multiple chars per frame for long texts
+  const chunkSize = len > 1000 ? 4 : len > 400 ? 3 : len > 150 ? 2 : 1;
+
+  let pos = 0;
+  bubble.classList.add('streaming-cursor');
+
+  return new Promise(resolve => {
+    function tick() {
+      pos += chunkSize;
+      if (pos >= len) pos = len;
+
+      const partial = fullText.slice(0, pos);
+      try {
+        bubble.innerHTML = marked.parse(partial);
+      } catch {
+        bubble.textContent = partial;
+      }
+      bubble.classList.add('streaming-cursor');
+      scrollToBottom();
+
+      if (pos >= len) {
+        bubble.classList.remove('streaming-cursor');
+        resolve();
+        return;
+      }
+
+      // Variable delay: pause slightly at sentence-ending punctuation
+      const lastChar = fullText[pos - 1];
+      let delay = baseInterval;
+      if ('。！？\n'.includes(lastChar)) delay += 80;
+      else if ('，、；：,.;:'.includes(lastChar)) delay += 30;
+
+      setTimeout(tick, delay);
+    }
+    // Small initial delay to show the dots animation briefly
+    setTimeout(tick, 300);
+  });
 }
 
 // ============================================================
@@ -989,6 +1135,7 @@ function updateSendBtn() {
   btn.disabled = isStreaming || !ta.value.trim();
 }
 </script>
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon='{"version":"2024.11.0","token":"75124c326cb447fe934cde04713ae013","r":1,"server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
 <script defer src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon='{"version":"2024.11.0","token":"75124c326cb447fe934cde04713ae013","r":1,"server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
 </body>
 </html>

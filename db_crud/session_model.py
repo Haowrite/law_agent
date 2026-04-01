@@ -1,4 +1,3 @@
-# session_model.py
 from sqlmodel import SQLModel, Field
 import sqlalchemy as sa
 from db_crud.base_func import get_time, get_id
@@ -6,6 +5,7 @@ from db_crud.base_func import get_time, get_id
 class User(SQLModel, table=True):
     user_id: str = Field(default_factory=get_id, primary_key=True)
     username: str = Field(sa_column=sa.Column(sa.String(50), unique=True, index=True, nullable=False))
+    email: str = Field(sa_column=sa.Column(sa.String(120), unique=True, index=True, nullable=True))
     password_hash: str = Field(sa_column=sa.Column(sa.String(128), nullable=False))  # bcrypt hash
     created_at: str = Field(default_factory=get_time)
 

@@ -45,3 +45,15 @@ os.makedirs(os.path.dirname(RAG_CACHE_FILE), exist_ok=True)
 
 # 重排序模型（增加默认值）
 RERANKER_MODEL = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")  # 默认重排序模型
+
+
+
+# --- 邮箱 SMTP 配置（QQ 邮箱） ---
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.qq.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
+SMTP_USER = os.getenv("SMTP_USER", "")            # 你的 QQ 邮箱地址，如 123456@qq.com
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")     # QQ 邮箱的 SMTP 授权码（非登录密码）
+SMTP_SENDER_NAME = os.getenv("SMTP_SENDER_NAME", "AI法律助手")
+
+# --- 验证码有效期（秒） ---
+VERIFY_CODE_EXPIRE = int(os.getenv("VERIFY_CODE_EXPIRE", "300"))  # 默认 5 分钟
