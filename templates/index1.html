@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI法律助手</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        /* ===== 保留原有样式不变 ===== */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .header h1 { font-size: 2.5em; margin-bottom: 10px; font-weight: 300; }
+        .header p { font-size: 1.1em; opacity: 0.9; }
+
+        /* 登录/注册面板 */
+        .auth-panel {
+            padding: 40px;
+            text-align: center;
+        }
+        .auth-form {
+            max-width: 400px;
+            margin: 0 auto;
+            background: #f8f9fa;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+        .auth-input {
+            width: 100%;
+            padding: 12px;
+            margin: 10px 0;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            font-size: 1em;
+        }
+        .auth-btn {
+            width: 100%;
+            padding: 12px;
+            margin: 10px 0;
+            border: none;
+            border-radius: 8px;
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            font-size: 1em;
+            cursor: pointer;
+        }
+        .auth-switch {
+            margin-top: 15px;
+            color: #4facfe;
+            cursor: pointer;
+            text-decoration: underline;
+        }
+
+        .main-content {
+            display: flex;
+            height: 600px;
+        }
+        .sidebar {
+            width: 300px;
+            background: #f8f9fa;
+            border-right: 1px solid #e9ecef;
+            padding: 20px;
+        }
+        .session-controls, .session-actions {
+            margin-bottom: 20px;
+        }
+        .session-btn, .action-btn {
+            width: 100%;
+            padding: 12px;
+            margin-bottom: 10px;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 0.9em;
+            transition: transform 0.2s;
+        }
+        .session-btn {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+        }
+        .clear-btn {
+            background: linear-gradient(135deg, #ffd93d 0%, #ff9a3d 100%);
+            color: #333;
+        }
+        .delete-btn {
+            background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
+            color: white;
+        }
+        .session-btn:hover, .action-btn:hover {
+            transform: translateY(-2px);
+        }
+
+        .session-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .session-item {
+            padding: 10px;
+            margin-bottom: 8px;
+            background: white;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+            cursor: pointer;
+            position: relative;
+        }
+        .session-item:hover { background: #e3f2fd; }
+        .session-item.active { background: #2196f3; color: white; }
+        .session-item-actions {
+            position: absolute;
+            right: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            display: none;
+        }
+        .session-item:hover .session-item-actions { display: block; }
+        .delete-session-btn {
+            background: #ff6b6b;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 4px 8px;
+            font-size: 0.7em;
+            cursor: pointer;
+        }
+        .delete-session-btn:hover { background: #ff4757; }
+
+        .chat-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+        .chat-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+        .message {
+            margin-bottom: 20px;
+            display: flex;
+            align-items: flex-start;
+        }
+        .message.user { justify-content: flex-end; }
+        .message.assistant { justify-content: flex-start; }
+        .message-content {
+            max-width: 70%;
+            padding: 15px 20px;
+            border-radius: 20px;
+            position: relative;
+        }
+        .message.user .message-content {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-bottom-right-radius: 5px;
+        }
+        .message.assistant .message-content {
+            background: white;
+            color: #333;
+            border: 1px solid #e9ecef;
+            border-bottom-left-radius: 5px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .message-meta {
+            font-size: 0.8em;
+            margin-top: 5px;
+            opacity: 0.7;
+        }
+        .input-container {
+            padding: 20px;
+            background: white;
+            border-top: 1px solid #e9ecef;
+        }
+        .input-group {
+            display: flex;
+            gap: 10px;
+        }
+        .message-input {
+            flex: 1;
+            padding: 15px 20px;
+            border: 2px solid #e9ecef;
+            border-radius: 25px;
+            font-size: 1em;
+            outline: none;
+        }
+        .message-input:focus { border-color: #4facfe; }
+        .send-btn {
+            padding: 15px 30px;
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            border: none;
+            border-radius: 25px;
+            font-size: 1em;
+            cursor: pointer;
+        }
+        .send-btn:hover { transform: translateY(-2px); }
+        .send-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        .typing-indicator {
+            display: none;
+            padding: 15px 20px;
+            background: white;
+            border: 1px solid #e9ecef;
+            border-radius: 20px;
+            border-bottom-left-radius: 5px;
+            margin-bottom: 20px;
+            color: #666;
+        }
+        @keyframes typing {
+            0%, 20% { content: ''; }
+            40% { content: '.'; }
+            60% { content: '..'; }
+            80%, 100% { content: '...'; }
+        }
+        .typing-dots::after {
+            content: '';
+            animation: typing 1.5s infinite;
+        }
+
+        /* Markdown 样式保持不变 */
+        .message-content h1, .message-content h2, .message-content h3,
+        .message-content p, .message-content ul, .message-content ol,
+        .message-content blockquote, .message-content code,
+        .message-content pre, .message-content table,
+        .message-content hr, .message-content strong, .message-content em {
+            /* 原有样式保留，此处省略以节省空间 */
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container" id="appContainer">
+        <!-- 默认显示登录界面 -->
+        <div class="auth-panel" id="authPanel">
+            <div class="header">
+                <h1>🔐 用户登录</h1>
+                <p>请输入您的账号信息</p>
+            </div>
+            <div class="auth-form">
+                <input type="text" id="loginUsername" class="auth-input" placeholder="用户名" />
+                <input type="password" id="loginPassword" class="auth-input" placeholder="密码" />
+                <button class="auth-btn" onclick="login()">登录</button>
+                <div class="auth-switch" onclick="toggleAuthMode()">没有账号？点击注册</div>
+                <div id="authMessage" style="margin-top: 10px; color: red; min-height: 20px;"></div>
+            </div>
+        </div>
+
+        <!-- 主聊天界面（初始隐藏） -->
+        <div class="main-content" id="mainContent" style="display: none;">
+            <div class="sidebar">
+                <div class="session-controls">
+                    <button class="session-btn" onclick="createNewSession()">🆕 新建对话</button>
+                    <button class="session-btn" onclick="refreshSessionList()">🔄 刷新列表</button>
+                    <button class="session-btn" style="background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);" onclick="logout()">
+                        🔐 退出登录
+                    </button>
+                </div>
+
+                <div class="session-actions">
+                    <button class="action-btn delete-btn" onclick="deleteCurrentSession()">🗑️ 删除当前会话</button>
+                </div>
+
+                <div class="session-list" id="sessionList">
+                    <!-- 动态生成 -->
+                </div>
+            </div>
+
+            <div class="chat-area">
+                <div class="chat-container" id="chatContainer">
+                    <div class="message assistant">
+                        <div class="message-content">
+                            <div>您好！我是您的AI法律助手，很高兴为您服务。</div>
+                            <div class="message-meta">系统消息</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="typing-indicator" id="typingIndicator">
+                    <span class="typing-dots">智能体正在思考中</span>
+                </div>
+
+                <div class="input-container">
+                    <div class="input-group">
+                        <input type="text" class="message-input" id="messageInput" placeholder="请输入您的问题..." maxlength="2000">
+                        <button class="send-btn" id="sendBtn" onclick="sendMessage()">发送</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 全局状态
+        let currentSessionId = null;
+        let userId = null;
+        let isTyping = false;
+
+        // 初始化
+        window.addEventListener('load', async () => {
+            // 尝试从 localStorage 恢复登录状态
+            const savedUserId = localStorage.getItem('userId');
+            const savedSessionId = localStorage.getItem('currentSessionId');
+
+            if (savedUserId) {
+                // 关键修改：验证用户是否真实存在
+                try {
+                    const res = await fetch(`/api/sessions?user_id=${encodeURIComponent(savedUserId)}`);
+                    if (res.ok) {
+                        // 用户有效，进入主界面
+                        userId = savedUserId;
+                        showMainUI();
+                        if (savedSessionId) {
+                            loadSession(savedSessionId);
+                        } else {
+                            createNewSession();
+                        }
+                        return;
+                    }
+                } catch (err) {
+                    console.warn('验证用户时出错，视为无效:', err);
+                }
+            }
+
+            // 无效用户或无保存信息 → 显示登录
+            clearStoredCredentials();
+            showAuthPanel();
+        });
+
+        function clearStoredCredentials() {
+            userId = null;
+            currentSessionId = null;
+            localStorage.removeItem('userId');
+            localStorage.removeItem('currentSessionId');
+        }
+
+        // ========== 认证相关 ==========
+        function toggleAuthMode() {
+            const header = document.querySelector('.header h1');
+            const switchBtn = document.querySelector('.auth-switch');
+            const loginBtn = document.querySelector('.auth-btn');
+            const messageDiv = document.getElementById('authMessage');
+
+            if (header.textContent === '🔐 用户登录') {
+                header.textContent = '📝 用户注册';
+                switchBtn.textContent = '已有账号？点击登录';
+                loginBtn.textContent = '注册';
+                loginBtn.onclick = register;
+            } else {
+                header.textContent = '🔐 用户登录';
+                switchBtn.textContent = '没有账号？点击注册';
+                loginBtn.textContent = '登录';
+                loginBtn.onclick = login;
+            }
+            messageDiv.textContent = '';
+        }
+
+        async function login() {
+            const username = document.getElementById('loginUsername').value.trim();
+            const password = document.getElementById('loginPassword').value;
+            const msgDiv = document.getElementById('authMessage');
+
+            if (!username || !password) {
+                msgDiv.textContent = '请输入用户名和密码';
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                const data = await res.json();
+
+                if (res.ok && data.user_id) {
+                    userId = data.user_id;
+                    localStorage.setItem('userId', userId);
+                    showMainUI();
+                    createNewSession(); // 登录后自动新建会话
+                } else {
+                    msgDiv.textContent = data.detail || '登录失败';
+                }
+            } catch (err) {
+                msgDiv.textContent = '网络错误，请检查服务是否启动';
+                console.error(err);
+            }
+        }
+
+        async function register() {
+            const username = document.getElementById('loginUsername').value.trim();
+            const password = document.getElementById('loginPassword').value;
+            const msgDiv = document.getElementById('authMessage');
+
+            if (!username || !password) {
+                msgDiv.textContent = '请输入用户名和密码';
+                return;
+            }
+            if (password.length < 6) {
+                msgDiv.textContent = '密码至少6位';
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                const data = await res.json();
+
+                if (res.ok && data.user_id) {
+                    msgDiv.textContent = '注册成功！请登录';
+                    setTimeout(() => {
+                        toggleAuthMode(); // 切回登录
+                    }, 1500);
+                } else {
+                    msgDiv.textContent = data.detail || '注册失败';
+                }
+            } catch (err) {
+                msgDiv.textContent = '网络错误，请检查服务是否启动';
+                console.error(err);
+            }
+        }
+
+        function logout() {
+            clearStoredCredentials();
+            showAuthPanel();
+        }
+
+        function showAuthPanel() {
+            document.getElementById('authPanel').style.display = 'block';
+            document.getElementById('mainContent').style.display = 'none';
+        }
+
+        function showMainUI() {
+            document.getElementById('authPanel').style.display = 'none';
+            document.getElementById('mainContent').style.display = 'flex';
+        }
+
+        // ========== 会话操作 ==========
+        async function createNewSession() {
+            if (!userId) return;
+            try {
+                const url = `/api/new_session?user_id=${encodeURIComponent(userId)}`;
+                const res = await fetch(url, { method: 'POST' });
+                const data = await res.json();
+                if (data.session_id) {
+                    currentSessionId = data.session_id;
+                    localStorage.setItem('currentSessionId', currentSessionId);
+                    clearChatContainer();
+                    addSystemMessage('新对话已创建！');
+                    refreshSessionList();
+                }
+            } catch (err) {
+                addSystemMessage('创建会话失败: ' + err.message);
+            }
+        }
+
+        async function refreshSessionList() {
+            if (!userId) return;
+            try {
+                const url = `/api/sessions?user_id=${encodeURIComponent(userId)}`;
+                const res = await fetch(url);
+                const data = await res.json();
+                displaySessionList(data.sessions || []);
+            } catch (err) {
+                console.error('获取会话列表失败:', err);
+                document.getElementById('sessionList').innerHTML = '<div style="padding:20px;color:#666;">加载失败</div>';
+            }
+        }
+
+        function displaySessionList(sessions) {
+            const list = document.getElementById('sessionList');
+            if (sessions.length === 0) {
+                list.innerHTML = '<div style="padding:20px;text-align:center;color:#666;">暂无会话</div>';
+                return;
+            }
+            list.innerHTML = sessions.map(s => `
+                <div class="session-item ${s.session_id === currentSessionId ? 'active' : ''}" 
+                     onclick="loadSession('${s.session_id}')">
+                    <div><strong>会话 ${s.session_id.slice(-8)}</strong></div>
+                    <div style="font-size:0.8em;opacity:0.7;">
+                        消息: ${s.message_count} | 
+                        创建: ${s.created_at}
+                    </div>
+                    <div class="session-item-actions">
+                        <button class="delete-session-btn" 
+                                onclick="event.stopPropagation(); deleteSession('${s.session_id}')">删除</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function loadSession(sessionId) {
+            if (!userId) return;
+            try {
+                const url = `/api/sessions/${sessionId}?user_id=${encodeURIComponent(userId)}`;
+                const res = await fetch(url);
+                if (!res.ok) throw new Error('会话不存在或无权访问');
+                const data = await res.json();
+                currentSessionId = sessionId;
+                localStorage.setItem('currentSessionId', sessionId);
+                clearChatContainer();
+                displaySessionHistory(data.session);
+                refreshSessionList();
+            } catch (err) {
+                addSystemMessage('加载会话失败: ' + err.message);
+            }
+        }
+
+        function displaySessionHistory(session) {
+            if (session.conversation_history?.length) {
+                session.conversation_history.forEach(msg => {
+                    addMessage(msg.is_user ? 'user' : 'assistant', msg.content, msg.timestamp);
+                });
+            } else {
+                addSystemMessage('该会话暂无消息');
+            }
+        }
+
+        async function deleteSession(sessionId) {
+            if (!confirm('确定删除此会话？')) return;
+            if (!userId) return;
+            try {
+                const url = `/api/sessions/${sessionId}?user_id=${encodeURIComponent(userId)}`;
+                const res = await fetch(url, { method: 'DELETE' });
+                if (res.ok) {
+                    addSystemMessage('会话已删除');
+                    if (currentSessionId === sessionId) {
+                        currentSessionId = null;
+                        localStorage.removeItem('currentSessionId');
+                        clearChatContainer();
+                        createNewSession();
+                    }
+                    refreshSessionList();
+                } else {
+                    const err = await res.json();
+                    throw new Error(err.detail || '删除失败');
+                }
+            } catch (err) {
+                addSystemMessage('删除失败: ' + err.message);
+            }
+        }
+
+        async function deleteCurrentSession() {
+            if (!currentSessionId) {
+                addSystemMessage('请选择一个会话');
+                return;
+            }
+            await deleteSession(currentSessionId);
+        }
+
+        // ========== 聊天 ==========
+        async function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const msg = input.value.trim();
+            if (!msg || isTyping || !currentSessionId || !userId) return;
+
+            addMessage('user', msg);
+            input.value = '';
+            showTypingIndicator();
+            isTyping = true;
+
+            try {
+                const url = `/api/chat?user_id=${encodeURIComponent(userId)}`;
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: msg, session_id: currentSessionId })
+                });
+                const data = await res.json();
+
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.detail || '请求失败');
+                }
+
+                addMessage('assistant', data.response);
+                refreshSessionList();
+            } catch (err) {
+                addMessage('assistant', '出错了：' + err.message);
+            } finally {
+                hideTypingIndicator();
+                isTyping = false;
+            }
+        }
+
+        // ========== 工具函数 ==========
+        function addMessage(role, content, timeStr = null) {
+            const container = document.getElementById('chatContainer');
+            const div = document.createElement('div');
+            div.className = `message ${role}`;
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content';
+            try {
+                contentDiv.innerHTML = marked.parse(content);
+            } catch {
+                contentDiv.textContent = content;
+            }
+            const meta = document.createElement('div');
+            meta.className = 'message-meta';
+            
+            let displayTime;
+            if (timeStr && typeof timeStr === 'string') {
+                // 假设 timeStr 是 "YYYY-MM-DD HH:mm:ss" 格式
+                displayTime = timeStr;
+            } else {
+                // 默认使用当前时间（用于新发送的消息）
+                displayTime = new Date().toLocaleString();
+            }
+            
+            meta.textContent = `${role === 'user' ? '您' : '智能客服'} · ${displayTime}`;
+            contentDiv.appendChild(meta);
+            div.appendChild(contentDiv);
+            container.appendChild(div);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function addSystemMessage(text) {
+            addMessage('assistant', text);
+        }
+
+        function clearChatContainer() {
+            document.getElementById('chatContainer').innerHTML = '';
+        }
+
+        function showTypingIndicator() {
+            document.getElementById('typingIndicator').style.display = 'block';
+        }
+
+        function hideTypingIndicator() {
+            document.getElementById('typingIndicator').style.display = 'none';
+        }
+
+        document.getElementById('messageInput').addEventListener('keypress', e => {
+            if (e.key === 'Enter') sendMessage();
+        });
+    </script>
+</body>
+
+</html>

@@ -2,7 +2,7 @@ langgraph_api/
 idea/
 __pycache__/
 */__pycache__/
-env
+.env
 gitignore
 milvus.db
 model/models/
@@ -17,3 +17,6 @@ test/result/
 files/new_laws/
 test_rag.py
 test/
+dump.rdb
+redis.conf
+test.py

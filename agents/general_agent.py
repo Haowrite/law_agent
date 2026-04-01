@@ -112,7 +112,7 @@ D. 禁止使用"根据相关法律规定"等模糊引用，每一处引用都必
         # Step 1: 真异步 —— 获取上下文（不阻塞）
         summary_of_older_chat, recent_chat_history = await self.get_conversation_context(state["session_id"])
 
-        # Step 2: 构造 prompt（纯 CPU，很快）
+        # Step 2: 构造 prompt
         message = self.system_prompt.format(
             summary_of_older_chat=summary_of_older_chat,
             recent_chat_history=recent_chat_history,

@@ -17,4 +17,3 @@ bash start.sh
 
 ![alt text](image.png)
 
-
