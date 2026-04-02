@@ -15,9 +15,11 @@ pip install -r requirements.txt
 bash start.sh
 ```
 
-![alt text](image.png)
 
 
 
-https://github.com/user-attachments/assets/de6b60ef-c549-4536-8e91-5c326ce021a1
+
+
+
+https://github.com/user-attachments/assets/4bc16df4-f503-45aa-9114-5e1f160a30e5
 
