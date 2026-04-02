@@ -12,7 +12,7 @@ from app_logger import llm_logger as logger
 from config import *
 # 导入智能体和工具
 from agents import GeneralAgent
-from RAG.retrieve import  retrieve_vector_store
+from RAG.retrieve import  _run_batch_with_fallback, retrieve_vector_store
 from model.get_model import get_llm
 from config import MODEL,  TEMPERATURE
 import time
@@ -92,7 +92,11 @@ def final_response_node(state: AgentState):
 
 # 构件助手
 def make_graph():
-    """构建LangGraph工作流图 - 集中式版本"""
+    """构建LangGraph工作流图 - 初始化子进程"""
+    
+    #初始化子进程
+    from utils.agent_thread_pool import PROCESS_POOL
+    PROCESS_POOL.submit(_run_batch_with_fallback, ['fafafa'], [])
 
     workflow = StateGraph(AgentState)
     agents_list = initialize_agents()

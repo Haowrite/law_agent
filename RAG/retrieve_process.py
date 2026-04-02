@@ -1,6 +1,5 @@
 """
-- 保留原有 batch_init_and_retrieve / init_and_retrieve 接口（签名不变）
-- 新增 add_document_in_process / delete_document_in_process 供子进程执行文档 CRUD
+子进程检索逻辑
 """
 
 from RAG.vector_doc import create_vector_store, VectorManager

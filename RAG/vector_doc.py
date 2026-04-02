@@ -328,7 +328,7 @@ def create_vector_store(m_embedding_model, vector_manager: VectorManager, file_p
             filenames = [doc.metadata.get("filename", "") for doc in split_docs]
             articles = [doc.metadata.get("article", "") for doc in split_docs]
             start_positions = [doc.metadata.get("start_position", 0) for doc in split_docs]
-
+   
             # 向量化
             logger.info("正在生成向量...")
             vectors = []
@@ -338,6 +338,9 @@ def create_vector_store(m_embedding_model, vector_manager: VectorManager, file_p
                 batch_vecs = m_embedding_model.embed_documents(batch_texts)
                 vectors.extend(batch_vecs)
                 torch.cuda.empty_cache()
+
+            for i in range(len(texts)):
+                texts[i] = ''.join(filenames[i].split('_')[:-1]) + articles[i] + "：" + texts[i]
 
             # 重建集合
             logger.info("正在重建 Milvus 集合...")

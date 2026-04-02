@@ -20,3 +20,4 @@ test/
 dump.rdb
 redis.conf
 test.py
+/test/
