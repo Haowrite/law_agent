@@ -91,11 +91,20 @@ C. 如果知识库检索内容只涵盖了用户问题的部分方面，只回�
 - 原问题："公司不给工资怎么办？" → 改写："用人单位拖欠劳动者工资，员工可以采取哪些法律救济措施？"
 
 当前输入信息如下：
-- 较久的聊天记录摘要：\n{summary_of_older_chat}\n
-- 最近的完整聊天记录历史：\n{recent_chat_history}\n
-- 知识库检索内容：\n{retrieved_content}\n
-- 知识库检索次数（整数，≥0）：\n{retrieval_count}\n
-- 用户当前提出的问题：\n{user_question}\n
+- 较久的聊天记录摘要：
+{summary_of_older_chat}
+
+- 最近的完整聊天记录历史：
+{recent_chat_history}
+
+- 知识库检索内容：
+{retrieved_content}
+
+- 知识库检索次数（整数，≥0）：
+{retrieval_count}
+
+- 用户当前提出的问题：
+{user_question}
 
 特殊情况：
 如果用户的问题可以从之前的回答中直接获取答案（例如用户追问了之前回答的内容），则可以直接回答，但必须确保回答内容完全基于之前的回答，不引入新的信息。

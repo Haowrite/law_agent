@@ -241,10 +241,10 @@ def fetch_full_articles_from_milvus(collection, reranked_docs: List[Tuple[float,
         article_id = f"{filename}::{article}"
         new_retrieved_ids.append(article_id)
         contents.append(
-            f"{full_text}（法律来源：{filename}{article}）"
+            f"{full_text}"
         )
 
-    result_text = "\n".join(contents)
+    result_text = "\n\n".join(contents)
     logger.info(f"最终返回 {len(full_articles)} 条完整条文，新增 {len(new_retrieved_ids)} 个条文ID")
     return result_text, new_retrieved_ids
 

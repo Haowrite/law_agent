@@ -80,41 +80,39 @@ def clean_legal_text(text: str) -> str:
 
 def split_by_article(text: str, source_path: str) -> List[Document]:
     """
-    增强版：使用更灵活的正则表达式切分法律条文，兼容：
-    - 紧凑格式：第一条，第一百零一条
-    - 带空格格式：第 一 条， 第 一百零一 条
-    - 阿拉伯数字：第1条， 第 101 条
+    按条文标题切分法律文本。
+    仅匹配出现在行首/段首的「第X条」，避免将正文中的交叉引用（如"依照本法第四十七条的规定"）误判为新条文。
+    兼容：紧凑格式（第一条）、带空格格式（第 一 条）。
     """
-    pattern = r'(第\s*[零一二三四五六七八九十百千]+\s*条)'
+    header_pattern = re.compile(
+        r'(?:^|\n)\s*(第\s*[零一二三四五六七八九十百千]+\s*条)'
+    )
 
-    parts = re.split(f'({pattern})', text.strip())
+    matches = list(header_pattern.finditer(text))
+    if not matches:
+        return []
 
     docs = []
-    i = 0
-    while i < len(parts):
-        if re.fullmatch(pattern, parts[i]):
-            article_num = parts[i].strip()
-            content = ""
-            i += 1
-            while i < len(parts) and not re.fullmatch(pattern, parts[i]):
-                content += parts[i]
-                i += 1
-            content = content.strip()
-            if content:
-                basename = os.path.basename(source_path)
-                filename_without_ext = os.path.splitext(basename)[0]
-                docs.append(
-                    Document(
-                        page_content=content,
-                        metadata={
-                            "filename": filename_without_ext,
-                            "article": article_num,
-                            "source": source_path,
-                        }
-                    )
+    basename = os.path.basename(source_path)
+    filename_without_ext = os.path.splitext(basename)[0]
+
+    for idx, match in enumerate(matches):
+        article_num = match.group(1).strip()
+        content_start = match.end()
+        content_end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+        content = text[content_start:content_end].strip()
+
+        if content:
+            docs.append(
+                Document(
+                    page_content=content,
+                    metadata={
+                        "filename": filename_without_ext,
+                        "article": article_num,
+                        "source": source_path,
+                    }
                 )
-        else:
-            i += 1
+            )
     return docs
 
 
@@ -340,7 +338,8 @@ def create_vector_store(m_embedding_model, vector_manager: VectorManager, file_p
                 torch.cuda.empty_cache()
 
             for i in range(len(texts)):
-                texts[i] = ''.join(filenames[i].split('_')[:-1]) + articles[i] + "：" + texts[i]
+                if start_positions[i] == 0:
+                    texts[i] = ''.join(filenames[i].split('_')[:-1]) + articles[i] + "：" + texts[i]
 
             # 重建集合
             logger.info("正在重建 Milvus 集合...")
