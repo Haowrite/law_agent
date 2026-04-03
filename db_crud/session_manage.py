@@ -337,6 +337,18 @@ class ConversationManager:
         pipe.execute()
         return True
 
+    def delete_session(self, session_id: str):
+        """删除会话在Redis中的所有相关key"""
+        keys = [
+            self.key_unsummarized.format(session_id),
+            self.key_summarized.format(session_id),
+            self.key_summary.format(session_id),
+            self.key_meta.format(session_id),
+        ]
+        deleted = self.redis_client.delete(*keys)
+        logger.info(f"已删除会话 {session_id} 的 Redis 缓存，共清理 {deleted} 个key")
+        return deleted
+
     async def get_context_for_model(self, session_id: str) -> Tuple[str, str]:
         await self.ensure_session_loaded(session_id)
         

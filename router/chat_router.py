@@ -135,4 +135,6 @@ async def delete_session(session_id: str, user_id: str = Query(...)):
     success = await delete_chat_session(session_id, user_id=user_id)
     if not success:
         raise HTTPException(status_code=404, detail="会话不存在或无权删除")
+    # 同步清理Redis中该会话的所有缓存key
+    m_conversation_manager.delete_session(session_id)
     return {"message": "会话删除成功"}

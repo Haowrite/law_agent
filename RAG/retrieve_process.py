@@ -268,7 +268,7 @@ def batch_init_and_retrieve(queries: List[str], exclude_ids_list: List[set] = No
     """
     manager = init_vector_manager_once()
     model = get_embedding_model()
-
+    reranker = get_reranker_model()
     if not queries:
         return []
 
