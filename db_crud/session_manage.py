@@ -48,7 +48,7 @@ class summary_memory_mananger:
 
 class ConversationManager:
     def __init__(self, redis_host='localhost', redis_port=6379, redis_db=0,
-                 token_threshold=26000, m=0.5, compress_batch_size=10, ttl_seconds=86400):
+                 token_threshold=51200, m=0.7, compress_batch_size=10, ttl_seconds=86400):
         
         self.redis_client = redis.Redis(host=redis_host, port=redis_port, db=redis_db, decode_responses=True)
         self.token_threshold = token_threshold
