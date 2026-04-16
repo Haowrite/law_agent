@@ -213,7 +213,10 @@ async def db_add_summary_and_update_messages(session_id: str, summary_content: s
             )
             session.add(summary)
             await session.flush() # 获取生成的 summary_id
-            
+
+            # 关键：在 Session 关闭前获取 ID
+            summary_id = summary.summary_id
+
             # 2. 批量更新消息状态
             # SQLModel/SQLAlchemy bulk update
             stmt = (
@@ -223,9 +226,9 @@ async def db_add_summary_and_update_messages(session_id: str, summary_content: s
             messages = (await session.exec(stmt)).all()
             for msg in messages:
                 msg.is_summarized = True
-            
+
             await session.commit()
-            return summary.summary_id # 返回ID用于Redis关联
+            return summary_id # 返回ID用于Redis关联
         except Exception as e:
             await session.rollback()
             logger.error(f"数据库事务失败(新增摘要): {e}")

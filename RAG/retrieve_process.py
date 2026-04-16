@@ -152,7 +152,7 @@ def rrf_fusion_optimized(faiss_results, bm25_results, k=60, faiss_weight=0.7, bm
     return scored_docs[:rrf_top_k]
 
 
-def reranker_reorder(query: str, candidate_docs, max_results=6):
+def reranker_reorder(query: str, candidate_docs, max_results=10):
     """
     使用 Reranker 模型对候选文档重排
     """
