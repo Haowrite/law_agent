@@ -291,4 +291,7 @@ A: 系统会自动降级批次大小，如仍不足可减小 `INITIAL_BATCH_SIZE
 
 A: 检查 Redis 服务是否启动，端口是否正确。
 
-https://github.com/user-attachments/assets/b206b7d9-6035-419e-894a-4d5086a03f73
+
+
+https://github.com/user-attachments/assets/5f311744-f9d9-4051-b09e-af26eb79abaf
+
