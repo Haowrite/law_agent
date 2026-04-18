@@ -372,3 +372,24 @@ class ConversationManager:
 summary_llm = get_llm(SUMMARY_MODEL, TEMPERATURE)
 memory_summarier = summary_memory_mananger(summary_llm)
 m_conversation_manager = ConversationManager(redis_host=REDIS_HOST, redis_port=REDIS_PORT)
+
+
+async def wait_until_redis_ready(retry_interval: float = 3.0):
+    """
+    在应用启动阶段阻塞直至 Redis 可连（PING）。
+    连接失败时持续打错误日志并周期性重试，避免拖到会话读写时才暴露。
+    """
+    client = m_conversation_manager.redis_client
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            await asyncio.to_thread(client.ping)
+            logger.info(f"Redis 已就绪 {REDIS_HOST}:{REDIS_PORT}（第 {attempt} 次尝试成功）")
+            return
+        except Exception as e:
+            logger.error(
+                f"Redis 连接失败（第 {attempt} 次）{REDIS_HOST}:{REDIS_PORT}，"
+                f"{retry_interval}s 后重试: {e}"
+            )
+            await asyncio.sleep(retry_interval)

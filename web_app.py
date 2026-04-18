@@ -13,8 +13,8 @@ from fastapi.templating import Jinja2Templates
 from contextlib import asynccontextmanager
 
 from app_logger import app_logger as logger
-from db_crud.base import init_db, async_engine
-from db_crud.session_manage import m_conversation_manager
+from db_crud.base import wait_until_mysql_ready, async_engine
+from db_crud.session_manage import m_conversation_manager, wait_until_redis_ready
 from utils.agent_thread_pool import PROCESS_POOL
 
 # 导入路由模块
@@ -34,13 +34,11 @@ async def lifespan(app: FastAPI):
     """
     logger.info("开始初始化应用依赖...")
 
-    # 1. 初始化数据库表
-    try:
-        await init_db()
-        logger.info("数据库表初始化成功")
-    except Exception as e:
-        logger.error(f"数据库初始化失败: {e}")
-        raise
+    # 1. MySQL：连不上则持续报错并重试，直至成功（避免首包业务请求才失败）
+    await wait_until_mysql_ready()
+    # 2. Redis：同上
+    await wait_until_redis_ready()
+    logger.info("数据库与 Redis 均已就绪，应用进入服务阶段")
 
     # ==============================
     # 应用运行阶段

@@ -1,3 +1,5 @@
+import asyncio
+
 from config import DATABASE_URL
 from sqlmodel import SQLModel
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -71,3 +73,22 @@ async def init_db():
     except Exception as e:
         logger.error(f"数据库表初始化失败: {e}")
         raise
+
+
+async def wait_until_mysql_ready(retry_interval: float = 3.0):
+    """
+    在应用启动阶段阻塞直至 MySQL 可连并完成表初始化。
+    连接失败时持续打错误日志并周期性重试，避免拖到业务请求时才暴露。
+    """
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            await init_db()
+            logger.info(f"MySQL 已就绪（第 {attempt} 次尝试成功）")
+            return
+        except Exception as e:
+            logger.error(
+                f"MySQL 连接或初始化失败（第 {attempt} 次），{retry_interval}s 后重试: {e}"
+            )
+            await asyncio.sleep(retry_interval)
