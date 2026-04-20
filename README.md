@@ -164,8 +164,8 @@ MAIN_MODEL=qwen3.5-plus
 API_KEY=your_api_key
 
 # 嵌入模型路径
-EMBEDDING_MODEL=/path/to/Qwen3-Embedding-0.6B
-TOKENIZER_MODEL=/path/to/Qwen3-Embedding-0.6B
+EMBEDDING_MODEL=/path/to/bge-large-zh-v1.5
+TOKENIZER_MODEL=/path/to/bge-large-zh-v1.5
 
 # 重排模型路径
 RERANKER_MODEL=/path/to/bge-reranker-v2-m3
