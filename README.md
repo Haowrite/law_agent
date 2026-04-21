@@ -22,7 +22,7 @@
 | 后端框架 | FastAPI, Uvicorn |
 | AI 框架 | LangChain, LangGraph |
 | 大语言模型 | Qwen3.5-plus (阿里云百炼) |
-| 嵌入模型 | Qwen3-Embedding-0.6B |
+| 嵌入模型 | bge-large-zh-v1.5 |
 | 重排模型 | BGE-Reranker-v2-m3 |
 | 向量数据库 | Milvus (Lite) |
 | 关系数据库 | MySQL (异步 AsyncMy) |
@@ -191,15 +191,8 @@ python -c "from modelscope import snapshot_snapshot; snapshot_snapshot('Qwen/Qwe
 python -c "from modelscope import snapshot_snapshot; 'BAAI/bge-reranker-v2-m3'"
 ```
 
-### 5. 初始化数据库
 
-```sql
-CREATE DATABASE agent_project CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-```
-
-表结构会在首次启动时自动创建。
-
-### 6. 启动服务
+### 5. 启动服务
 
 ```bash
 bash start.sh
