@@ -180,19 +180,7 @@ REDIS_PORT=6379
 VECTOR_COLLECTION_NAME=legal_knowledge
 RE_BUILD=False  # 首次运行设为 True
 ```
-
-### 4. 下载模型
-
-```bash
-# 从 ModelScope 下载嵌入模型
-python -c "from modelscope import snapshot_snapshot; snapshot_snapshot('Qwen/Qwen3-Embedding-0.6B')"
-
-# 下载重排模型
-python -c "from modelscope import snapshot_snapshot; 'BAAI/bge-reranker-v2-m3'"
-```
-
-
-### 5. 启动服务
+### 4. 启动服务
 
 ```bash
 bash start.sh
