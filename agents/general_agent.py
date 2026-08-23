@@ -10,6 +10,7 @@ from regex import R
 from .base_agent import BaseAgent
 from app_logger import llm_logger as logger, timer
 import time
+from RAG.evidence import format_evidences_for_prompt
 
 class GeneralAgent(BaseAgent):
     def __init__(self):
@@ -67,7 +68,8 @@ D. 用户需要的是**行动指引与结论性建议**，不是检索结果的�
 第三步：如果知识库检索内容足够回答用户问题：
     enable_answer = True
     response = 基于知识库内容的准确、完整且礼貌的回答，且**以具体解决措施为主线**（先回应用户关切，再给出步骤、选项与注意点）。要求：
-      - 每一个法律观点都必须引用知识库检索内容中的具体法条及其来源，格式如："根据《民法典》第九百七十三条……"。
+      - 每一个法律观点都必须引用知识库检索内容中的具体法条及其来源，并在句末标注证据编号，格式如："根据《民法典》第九百七十三条……[1]"。
+      - 只能引用知识库检索内容中出现的证据编号，不能编造不存在的引用编号。
       - 以专业、友善的语气提供解释或建议；将检索到的条文、案例或说明**转化为**对用户可操作的指引，而不是把检索文本原样返回。
       - **严禁添加知识库检索出来的内容中未包含的任何法条、事实、解释或主观意见。**
       - **严禁**大段复制、罗列或拼接知识库检索内容；允许为佐证观点而作的必要、简短的依法引用。
@@ -119,10 +121,12 @@ D. 用户需要的是**行动指引与结论性建议**，不是检索结果的�
         summary_of_older_chat, recent_chat_history = await self.get_conversation_context(state["session_id"])
 
         # Step 2: 构造 prompt
+        evidence_prompt = format_evidences_for_prompt(state.get("rag_evidences", []))
+        retrieved_content = evidence_prompt or '\n'.join([str(r) for r in state["rag_result"]])
         message = self.system_prompt.format(
             summary_of_older_chat=summary_of_older_chat,
             recent_chat_history=recent_chat_history,
-            retrieved_content='\n'.join([str(r) for r in state["rag_result"]]),
+            retrieved_content=retrieved_content,
             user_question=state["customer_query"],
             retrieval_count=state["rag_cnt"]
         )

@@ -13,6 +13,8 @@ from config import *
 # 导入智能体和工具
 from agents import GeneralAgent
 from RAG.retrieve import  _run_batch_with_fallback, retrieve_vector_store
+from RAG.evidence import prepare_public_citations
+from RAG.evidence_verifier import verify_answer_citations
 from model.get_model import get_llm
 from config import MODEL,  TEMPERATURE
 import time
@@ -67,10 +69,12 @@ async def tool_call_node(state: AgentState):
     rag_res_data = json.loads(rag_res_json)
     rag_text = rag_res_data["text"]
     new_ids = rag_res_data["retrieved_ids"]
+    evidences = rag_res_data.get("evidences", [])
 
     return {
         'rag_result': [{'search_query': ai_action.search_query, 'rag_result': rag_text}],
         'rag_cnt': 1,
+        'rag_evidences': evidences,
         'retrieved_ids': new_ids,  # 新检索到的条文ID，通过 operator.add 累加到 state 中
         'run_process': [("rag_node", (time.time() - start_time))],
     }
@@ -83,10 +87,19 @@ def final_response_node(state: AgentState):
     # 添加AI消息到数据库
     try:
         state['response'] = state['ai_actions'][-1].response
+        state['citations'] = prepare_public_citations(state.get("rag_evidences", []))
+        state['verification'] = verify_answer_citations(
+            state['response'],
+            state.get("rag_evidences", []),
+        )
     except Exception as e:
         logger.info(f"Error adding message to session: {e}")
     
-    return {'response': state['ai_actions'][-1].response}
+    return {
+        'response': state['ai_actions'][-1].response,
+        'citations': state.get('citations', []),
+        'verification': state.get('verification', {}),
+    }
 
 
 

@@ -25,6 +25,8 @@ from app_logger import database_logger as logger
 from app_logger import timer
 import unicodedata
 from db_crud.base_func import count_tokens
+from RAG.cache_sync import load_docs_from_milvus_collection
+from RAG.doc_article_sync import sync_rebuild_doc_articles
 import torch
 from tqdm import tqdm
 from config import VECTOR_COLLECTION_NAME, MILVUS_URL, EMBEDDING_DIM, RAG_CACHE_FILE
@@ -36,7 +38,7 @@ def chinese_tokenizer(text: str) -> List[str]:
 
 
 class VectorManager:
-    vector_store: Collection = None
+    vector_store: Optional[Collection] = None
     bm25_retriever: Optional[BM25Retriever] = None
 
 
@@ -85,7 +87,7 @@ def split_by_article(text: str, source_path: str) -> List[Document]:
     兼容：紧凑格式（第一条）、带空格格式（第 一 条）。
     """
     header_pattern = re.compile(
-        r'(?:^|\n)\s*(第\s*[零一二三四五六七八九十百千]+\s*条)'
+        r'(?:^|\n)\s*(第\s*(?:[零一二三四五六七八九十百千]+|\d+)\s*条)'
     )
 
     matches = list(header_pattern.finditer(text))
@@ -97,7 +99,7 @@ def split_by_article(text: str, source_path: str) -> List[Document]:
     filename_without_ext = os.path.splitext(basename)[0]
 
     for idx, match in enumerate(matches):
-        article_num = match.group(1).strip()
+        article_num = re.sub(r'\s+', '', match.group(1))
         content_start = match.end()
         content_end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
         content = text[content_start:content_end].strip()
@@ -114,6 +116,46 @@ def split_by_article(text: str, source_path: str) -> List[Document]:
                 )
             )
     return docs
+
+
+def _split_plain_document(doc: Document, text_splitter: RecursiveCharacterTextSplitter) -> List[Document]:
+    content = compact_clean(doc.page_content)
+    if not content:
+        return []
+
+    source_path = doc.metadata["source"]
+    basename = os.path.basename(source_path)
+    filename_without_ext = os.path.splitext(basename)[0]
+    base_doc = Document(
+        page_content=content,
+        metadata={
+            **doc.metadata,
+            "filename": filename_without_ext,
+            "article": "全文片段1",
+            "source": source_path,
+            "start_position": 0,
+        }
+    )
+
+    if count_tokens(content) <= 512:
+        return [base_doc]
+
+    split_docs = text_splitter.split_documents([base_doc])
+    search_start = 0
+    for index, split_doc in enumerate(split_docs, start=1):
+        chunk_pos = content.find(split_doc.page_content, search_start)
+        if chunk_pos == -1:
+            chunk_pos = search_start
+        else:
+            search_start = chunk_pos + len(split_doc.page_content)
+
+        split_doc.metadata.update({
+            "filename": filename_without_ext,
+            "article": f"全文片段{index}",
+            "source": source_path,
+            "start_position": chunk_pos,
+        })
+    return split_docs
 
 
 def load_documents(source_dir: str) -> List[Document]:
@@ -203,6 +245,12 @@ def split_documents(documents: List[Document]) -> List[Document]:
             text=doc.page_content,
             source_path=doc.metadata["source"]
         )
+
+        if not article_docs:
+            fallback_docs = _split_plain_document(doc, text_splitter)
+            all_article_docs.extend(fallback_docs)
+            continue
+
         for art_doc in article_docs:
             art_doc.page_content = compact_clean(art_doc.page_content)
 
@@ -269,7 +317,7 @@ def create_vector_store(m_embedding_model, vector_manager: VectorManager, file_p
     构建/加载向量知识库（函数签名不变）
     重构点：re_build 时使用 doc_article_crud 维护 MySQL 关系表
     """
-    from db_crud.doc_article_crud import batch_insert_doc_articles, delete_doc_articles_by_path, check_document_exists
+    from db_crud.doc_article_crud import batch_insert_doc_articles, delete_all_doc_articles, check_document_exists
 
     try:
         logger.info("=" * 50)
@@ -383,18 +431,13 @@ def create_vector_store(m_embedding_model, vector_manager: VectorManager, file_p
                     doc_path_to_ids[abs_path] = []
                 doc_path_to_ids[abs_path].append(doc.metadata["id"])
 
-            for abs_path, aid_list in doc_path_to_ids.items():
-                if not abs_path:
-                    continue
-                # 先清除旧记录（重建场景）
-                try:
-                    delete_doc_articles_by_path(abs_path)
-                except Exception:
-                    pass
-                doc_id = str(uuid.uuid4())
-                batch_insert_doc_articles(abs_path, doc_id, aid_list)
+            synced_count = sync_rebuild_doc_articles(
+                doc_path_to_ids,
+                delete_all_doc_articles=delete_all_doc_articles,
+                batch_insert_doc_articles=batch_insert_doc_articles,
+            )
 
-            logger.info(f"MySQL doc_article 表同步完成，共 {len(doc_path_to_ids)} 个文档")
+            logger.info(f"MySQL doc_article 表同步完成，共 {synced_count} 个文档")
 
             # === 保存 split_docs 到缓存文件 ===
             save_docs_to_cache(split_docs, RAG_CACHE_FILE)
@@ -409,59 +452,12 @@ def create_vector_store(m_embedding_model, vector_manager: VectorManager, file_p
             # --- 非重建逻辑：从 Milvus 使用 query_iterator 游标读取 ---
             logger.info("未启用重建，正在通过 query_iterator 从 Milvus 加载文档用于 BM25...")
 
-            final_docs = []
-            total_loaded = 0
-            temp_token_nums = []
-            iterator = None
-
-            try:
-                iterator = collection.query_iterator(
-                    expr="id != ''",
-                    output_fields=["text", "metadata", "id", "filename", "article", "start_position"],
-                    batch_size=1000
-                )
-
-                while True:
-                    batch = iterator.next()
-                    if len(batch) == 0:
-                        break
-
-                    batch_docs = []
-                    for entity in batch:
-                        text = entity.get("text", "")
-                        meta = entity.get("metadata", {})
-
-                        doc = Document(page_content=text, metadata=meta)
-
-                        if "token_num" not in meta:
-                            t_num = count_tokens(text)
-                            doc.metadata["token_num"] = t_num
-                            temp_token_nums.append(t_num)
-                        else:
-                            temp_token_nums.append(meta["token_num"])
-
-                        if "filename" not in doc.metadata:
-                            doc.metadata["filename"] = entity.get("filename", "")
-                        if "article" not in doc.metadata:
-                            doc.metadata["article"] = entity.get("article", "")
-                        if "start_position" not in doc.metadata:
-                            doc.metadata["start_position"] = entity.get("start_position", 0)
-
-                        batch_docs.append(doc)
-
-                    final_docs.extend(batch_docs)
-                    total_loaded += len(batch_docs)
-
-                    del batch
-                    del batch_docs
-                    gc.collect()
-
-                    logger.debug(f"已加载 {total_loaded} 条...")
-
-            finally:
-                if iterator is not None:
-                    iterator.close()
-                    logger.debug("Milvus 游标已关闭")
+            final_docs = load_docs_from_milvus_collection(collection)
+            total_loaded = len(final_docs)
+            temp_token_nums = [
+                doc.metadata.get("token_num", count_tokens(doc.page_content))
+                for doc in final_docs
+            ]
 
             if not final_docs:
                 raise ValueError("Milvus 集合中未找到任何文档")

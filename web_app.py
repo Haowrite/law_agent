@@ -21,6 +21,7 @@ from utils.agent_thread_pool import PROCESS_POOL
 from router.user_router import router as user_router
 from router.chat_router import router as chat_router
 from router.doc_router import router as doc_router
+from router.research_router import router as research_router
 from db_crud.doc_article_model import DocArticle
 from db_crud.session_model import ChatSession, ChatMessage, User, SummaryMessage
 
@@ -90,6 +91,7 @@ templates = Jinja2Templates(directory="templates")
 app.include_router(user_router)
 app.include_router(chat_router)
 app.include_router(doc_router)
+app.include_router(research_router)
 
 
 # ------------------------------

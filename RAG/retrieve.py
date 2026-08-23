@@ -170,9 +170,12 @@ async def retrieve_vector_store(query: str, exclude_ids: list = None) -> str:
 
     try:
         result = await asyncio.wait_for(future, timeout=60.0)
-        # result 是 (text, new_ids) 的元组
-        text, new_ids = result
-        return _json.dumps({"text": text, "retrieved_ids": new_ids}, ensure_ascii=False)
+        if len(result) == 2:
+            text, new_ids = result
+            evidences = []
+        else:
+            text, new_ids, evidences = result
+        return _json.dumps({"text": text, "retrieved_ids": new_ids, "evidences": evidences}, ensure_ascii=False)
     except asyncio.TimeoutError:
         if request_id in _pending_futures:
             del _pending_futures[request_id]

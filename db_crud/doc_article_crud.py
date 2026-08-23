@@ -101,6 +101,22 @@ def delete_doc_articles_by_path(doc_abs_path: str) -> int:
         session.close()
 
 
+def delete_all_doc_articles() -> int:
+    """清空文档-条文关系表，返回删除数量。用于全量重建知识库。"""
+    session = get_sync_session()
+    try:
+        count = session.query(DocArticle).delete()
+        session.commit()
+        logger.info(f"清空 doc_article 表，删除 {count} 条记录")
+        return count
+    except Exception as e:
+        session.rollback()
+        logger.error(f"清空 doc_article 表失败: {e}")
+        raise
+    finally:
+        session.close()
+
+
 # ========== 高级操作（同时操作 MySQL + Milvus） ==========
 
 def delete_document(doc_abs_path: str):
@@ -151,6 +167,7 @@ def add_document(doc_abs_path: str, embedding_model, vector_manager=None):
     """
     import torch
     from tqdm import tqdm
+    from RAG.cache_sync import refresh_rag_cache_from_milvus
     from RAG.vector_doc import (
         load_documents, split_documents, _get_collection_schema,
         chinese_tokenizer, VectorManager, save_docs_to_cache
@@ -257,6 +274,7 @@ def add_document(doc_abs_path: str, embedding_model, vector_manager=None):
 
     # 7. 插入 MySQL
     batch_insert_doc_articles(doc_abs_path, doc_id, article_ids)
+    refresh_rag_cache_from_milvus(collection, RAG_CACHE_FILE, save_docs_to_cache)
 
     # 8. 更新 BM25（如果 vector_manager 存在）
     if vector_manager is not None and vector_manager.bm25_retriever is not None:
@@ -270,39 +288,11 @@ def add_document(doc_abs_path: str, embedding_model, vector_manager=None):
 
 def _rebuild_bm25(vector_manager, collection: Collection):
     """从 Milvus 重新加载全部文档并重建 BM25"""
-    import gc
-    from langchain_core.documents import Document
     from langchain_community.retrievers import BM25Retriever
+    from RAG.cache_sync import load_docs_from_milvus_collection
     from RAG.vector_doc import chinese_tokenizer
 
-    final_docs = []
-    iterator = None
-    try:
-        iterator = collection.query_iterator(
-            expr="id != ''",
-            output_fields=["text", "metadata", "id", "filename", "article", "start_position"],
-            batch_size=1000
-        )
-        while True:
-            batch = iterator.next()
-            if len(batch) == 0:
-                break
-            for entity in batch:
-                text = entity.get("text", "")
-                meta = entity.get("metadata", {})
-                doc = Document(page_content=text, metadata=meta)
-                if "filename" not in doc.metadata:
-                    doc.metadata["filename"] = entity.get("filename", "")
-                if "article" not in doc.metadata:
-                    doc.metadata["article"] = entity.get("article", "")
-                if "start_position" not in doc.metadata:
-                    doc.metadata["start_position"] = entity.get("start_position", 0)
-                final_docs.append(doc)
-            del batch
-            gc.collect()
-    finally:
-        if iterator is not None:
-            iterator.close()
+    final_docs = load_docs_from_milvus_collection(collection)
 
     if final_docs:
         vector_manager.bm25_retriever = BM25Retriever.from_documents(

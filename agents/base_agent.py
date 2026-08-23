@@ -26,6 +26,9 @@ class AgentState(TypedDict):
     session_id: str = None
     ai_actions: Annotated[List[Any], operator.add] = []
     rag_result: Annotated[list[Any], operator.add] = []
+    rag_evidences: Annotated[list[Any], operator.add] = []
+    citations: list[Any] = []
+    verification: dict[str, Any] = {}
     rag_cnt: Annotated[int, operator.add] = 0
     customer_query: str = None
     response: str = None

@@ -10,6 +10,13 @@ from model.get_model import get_llm
 from app_logger import timer
 from db_crud.chat_memory_crud import AsyncMySQLChatHistory, db_add_summary_and_update_messages, db_delete_summaries, db_force_mark_summarized, get_all_messages_for_load, get_all_summaries_for_load
 
+
+def _hset_compat(redis_or_pipeline, key: str, values: Dict[str, str]):
+    """Write hash fields one by one for Redis versions that lack multi-field HSET."""
+    for field, value in values.items():
+        redis_or_pipeline.hset(key, field, value)
+
+
 # ======================上下文摘要智能体============================
 class summary_memory_mananger:
     def __init__(self, summary_model):
@@ -76,7 +83,7 @@ class ConversationManager:
 
     def _set_meta(self, session_id: str, total: int, unsum: int, sum_val: int):
         key = self.key_meta.format(session_id)
-        self.redis_client.hset(key, mapping={
+        _hset_compat(self.redis_client, key, {
             "total": str(total), 
             "unsum": str(unsum), 
             "sum": str(sum_val)
@@ -327,7 +334,7 @@ class ConversationManager:
 
         # 写入Meta
         total_tokens = current_unsum_tokens + current_sum_tokens
-        pipe.hset(self.key_meta.format(session_id), mapping={
+        _hset_compat(pipe, self.key_meta.format(session_id), {
             "total": str(total_tokens),
             "unsum": str(current_unsum_tokens),
             "sum": str(current_sum_tokens)

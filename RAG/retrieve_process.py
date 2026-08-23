@@ -4,15 +4,17 @@
 
 from RAG.vector_doc import create_vector_store, VectorManager
 from RAG.base import embeddings_model, reranker_model
+from RAG.rerank_control import rerank_or_passthrough
 from app_logger import database_logger as logger
 import json
-from config import RE_BUILD, FILE_PATH
+from config import ENABLE_RERANKER, RE_BUILD, FILE_PATH
 import os
 from typing import List, Any, Tuple, Dict
+from RAG.evidence import build_evidence_item
 
 # 全局变量 (在每个子进程中独立存在)
 _EMBEDDING_MODEL = None
-_VECTORMANAGER: VectorManager = None
+_VECTORMANAGER = None
 _RERANKER_MODEL = None
 
 
@@ -79,11 +81,15 @@ def delete_document_in_process(doc_abs_path: str) -> dict:
     """
     from db_crud.doc_article_crud import delete_document, _rebuild_bm25
     from pymilvus import connections, Collection
-    from config import MILVUS_URL, VECTOR_COLLECTION_NAME
+    from config import MILVUS_URL, VECTOR_COLLECTION_NAME, RAG_CACHE_FILE
+    from RAG.cache_sync import refresh_rag_cache_from_milvus
+    from RAG.document_library import remove_file_if_exists, resolve_document_path
+    from RAG.vector_doc import save_docs_to_cache
 
     manager = init_vector_manager_once()
 
     result = delete_document(doc_abs_path=doc_abs_path)
+    file_deleted = False
 
     # 删除后重建 BM25
     if result.get("deleted_count", 0) > 0 and manager is not None:
@@ -92,9 +98,17 @@ def delete_document_in_process(doc_abs_path: str) -> dict:
             collection = Collection(VECTOR_COLLECTION_NAME)
             collection.load()
             _rebuild_bm25(manager, collection)
+            refresh_rag_cache_from_milvus(collection, RAG_CACHE_FILE, save_docs_to_cache)
         except Exception as e:
             logger.warning(f"删除后重建 BM25 失败: {e}")
 
+    try:
+        safe_path = resolve_document_path(FILE_PATH, doc_abs_path)
+        file_deleted = remove_file_if_exists(safe_path)
+    except Exception as e:
+        logger.warning(f"删除物理文件失败: {e}")
+
+    result["file_deleted"] = file_deleted
     return result
 
 
@@ -156,33 +170,23 @@ def reranker_reorder(query: str, candidate_docs, max_results=10):
     """
     使用 Reranker 模型对候选文档重排
     """
-    if not candidate_docs:
-        return []
-
-    reranker = get_reranker_model()
-
-    query_passage_pairs = []
-    doc_list = [doc for _, doc in candidate_docs]
-    for doc in doc_list:
-        query_passage_pairs.append([query, doc.page_content])
-
-    scores = reranker.compute_score(query_passage_pairs, normalize=True)
-
-    scored_docs = list(zip(scores, doc_list))
-    scored_docs.sort(key=lambda x: x[0], reverse=True)
-
-    final_docs = scored_docs[:max_results]
-    return final_docs
+    return rerank_or_passthrough(
+        query=query,
+        candidate_docs=candidate_docs,
+        max_results=max_results,
+        enabled=ENABLE_RERANKER,
+        get_reranker=get_reranker_model,
+    )
 
 
-def fetch_full_articles_from_milvus(collection, reranked_docs: List[Tuple[float, Any]]) -> Tuple[str, List[str]]:
+def fetch_full_articles_from_milvus(collection, reranked_docs: List[Tuple[float, Any]]) -> Tuple[str, List[str], List[dict]]:
     """
     根据 Reranker 排序结果，从 Milvus 中检索完整条文并拼接返回。
     同时返回本次检索到的条文 ID 列表，用于后续去重。
     返回: (拼接后的条文文本, 本次检索到的条文ID列表)
     """
     if not reranked_docs:
-        return "", []
+        return "", [], []
 
     seen_keys = set()
     unique_article_keys = []
@@ -221,35 +225,45 @@ def fetch_full_articles_from_milvus(collection, reranked_docs: List[Tuple[float,
 
         seen_texts = set()
         unique_chunks = []
+        first_metadata = {}
         for r in results:
             text = r.get("text", "")
             if text and text not in seen_texts:
                 seen_texts.add(text)
                 start_pos = r.get("start_position", 0)
                 unique_chunks.append((start_pos, text))
+                if not first_metadata:
+                    first_metadata = r.get("metadata", {}) or {}
 
         unique_chunks.sort(key=lambda x: x[0])
 
         full_text = "".join([chunk_text for _, chunk_text in unique_chunks])
-        full_articles.append((filename, base_article, full_text))
+        full_articles.append((filename, base_article, full_text, first_metadata))
         logger.debug(f"条文拼接完成: {filename} {base_article} -> {len(unique_chunks)} 个 chunk，总长 {len(full_text)} 字符")
 
     # 收集本次检索到的条文ID
     new_retrieved_ids = []
     contents = []
-    for filename, article, full_text in full_articles:
+    evidences = []
+    for citation_index, (filename, article, full_text, metadata) in enumerate(full_articles, start=1):
         article_id = f"{filename}::{article}"
         new_retrieved_ids.append(article_id)
         contents.append(
             f"{full_text}"
         )
+        evidence_metadata = {
+            **(metadata if isinstance(metadata, dict) else {}),
+            "filename": filename,
+            "article": article,
+        }
+        evidences.append(build_evidence_item(citation_index, full_text, evidence_metadata))
 
     result_text = "\n\n".join(contents)
     logger.info(f"最终返回 {len(full_articles)} 条完整条文，新增 {len(new_retrieved_ids)} 个条文ID")
-    return result_text, new_retrieved_ids
+    return result_text, new_retrieved_ids, evidences
 
 
-def init_and_retrieve(query: str, exclude_ids: set = None) -> Tuple[str, List[str]]:
+def init_and_retrieve(query: str, exclude_ids: set = None) -> Tuple[str, List[str], List[dict]]:
     """
     保留原有单条接口，供非批处理场景或测试使用。
     返回: (检索结果文本, 本次检索到的条文ID列表)
@@ -258,7 +272,7 @@ def init_and_retrieve(query: str, exclude_ids: set = None) -> Tuple[str, List[st
     return results[0]
 
 
-def batch_init_and_retrieve(queries: List[str], exclude_ids_list: List[set] = None) -> List[Tuple[str, List[str]]]:
+def batch_init_and_retrieve(queries: List[str], exclude_ids_list: List[set] = None) -> List[Tuple[str, List[str], List[dict]]]:
     """
     批量处理核心函数
     参数:
@@ -331,8 +345,8 @@ def batch_init_and_retrieve(queries: List[str], exclude_ids_list: List[set] = No
 
         reranked_docs = reranker_reorder(query, rrf_candidates, max_results=6)
 
-        fused_text, new_ids = fetch_full_articles_from_milvus(manager.vector_store, reranked_docs)
+        fused_text, new_ids, evidences = fetch_full_articles_from_milvus(manager.vector_store, reranked_docs)
 
-        final_results.append((fused_text, new_ids))
+        final_results.append((fused_text, new_ids, evidences))
 
     return final_results
