@@ -5,6 +5,7 @@ from datetime import datetime
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy import update
 
 from db_crud.base import async_engine
 from db_crud.session_model import ChatSession, ChatMessage, SummaryMessage
@@ -43,6 +44,29 @@ class AsyncMySQLChatHistory:
 
 # ==================== 会话管理函数 ====================
 
+def _build_user_session_list_stmt(user_id: str):
+    return (
+        select(
+            ChatSession.session_id.label("session_id"),
+            ChatSession.timestamp.label("created_at"),
+            func.count(ChatMessage.id).label("message_count"),
+        )
+        .outerjoin(ChatMessage, ChatMessage.session_id == ChatSession.session_id)
+        .where(ChatSession.user_id == user_id)
+        .group_by(ChatSession.session_id, ChatSession.timestamp)
+        .order_by(ChatSession.timestamp.desc())
+    )
+
+
+def _row_get(row, key: str, index: int):
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None and key in mapping:
+        return mapping[key]
+    if hasattr(row, key):
+        return getattr(row, key)
+    return row[index]
+
+
 async def create_chat_session(user_id: str) -> str:
     """为用户创建新会话"""
     if not await get_user_by_id(user_id):
@@ -65,27 +89,15 @@ async def get_user_session_list(user_id: str) -> List[Dict]:
         return []
 
     async with AsyncSession(async_engine) as db:
-        sessions = await db.exec(
-            select(ChatSession)
-            .where(ChatSession.user_id == user_id)
-            .order_by(ChatSession.timestamp.desc())
-        )
-        sessions = sessions.all()
-
-        result = []
-        for s in sessions:
-            msg_count_result = await db.exec(
-                select(func.count(ChatMessage.id))
-                .where(ChatMessage.session_id == s.session_id)
-            )
-            msg_count = msg_count_result.first() or 0
-
-            result.append({
-                "session_id": s.session_id,
-                "created_at": s.timestamp,
-                "message_count": msg_count
-            })
-        return result
+        rows = (await db.exec(_build_user_session_list_stmt(user_id))).all()
+        return [
+            {
+                "session_id": _row_get(row, "session_id", 0),
+                "created_at": _row_get(row, "created_at", 1),
+                "message_count": int(_row_get(row, "message_count", 2) or 0)
+            }
+            for row in rows
+        ]
 
 async def delete_all_sessions_by_user(user_id: str) -> None:
     """删除用户所有会话及消息"""
@@ -177,6 +189,13 @@ async def validate_session_ownership(session_id: str, user_id: str) -> bool:
 
 # ==================== 底层原子操作函数 ====================
 
+def _build_mark_messages_summarized_stmt(message_ids: List[str]):
+    return (
+        update(ChatMessage)
+        .where(ChatMessage.id.in_(message_ids))
+        .values(is_summarized=True)
+    )
+
 async def get_all_messages_for_load(session_id: str):
     """加载会话所有消息"""
     async with AsyncSession(async_engine) as db:
@@ -217,15 +236,8 @@ async def db_add_summary_and_update_messages(session_id: str, summary_content: s
             # 关键：在 Session 关闭前获取 ID
             summary_id = summary.summary_id
 
-            # 2. 批量更新消息状态
-            # SQLModel/SQLAlchemy bulk update
-            stmt = (
-                select(ChatMessage)
-                .where(ChatMessage.id.in_(message_ids))
-            )
-            messages = (await session.exec(stmt)).all()
-            for msg in messages:
-                msg.is_summarized = True
+            if message_ids:
+                await session.exec(_build_mark_messages_summarized_stmt(message_ids))
 
             await session.commit()
             return summary_id # 返回ID用于Redis关联
@@ -249,10 +261,5 @@ async def db_force_mark_summarized(message_ids: List[str]):
     if not message_ids:
         return
     async with AsyncSession(async_engine) as session:
-        messages = (await session.exec(
-            select(ChatMessage).where(ChatMessage.id.in_(message_ids))
-        )).all()
-        for msg in messages:
-            msg.is_summarized = True
-        session.add_all(messages)
+        await session.exec(_build_mark_messages_summarized_stmt(message_ids))
         await session.commit()

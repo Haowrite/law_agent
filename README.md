@@ -142,9 +142,9 @@ ConversationManager
 │   ├── session:{id}:summary       摘要列表
 │   └── session:{id}:meta          token 计数
 └── MySQL 持久层
-    ├── chat_sessions              会话表
-    ├── chat_messages              消息表
-    └── summary_messages           摘要表
+    ├── chatsession                会话表
+    ├── chatmessage                消息表
+    └── summarymessage             摘要表
 ```
 
 ### 上下文压缩策略
@@ -154,6 +154,99 @@ ConversationManager
 3. 未摘要 token 超阈值后，取最早一批消息生成摘要。
 4. 摘要写入 MySQL 后，再更新 Redis 列表。
 5. 模型调用时组合“历史摘要 + 近期原文消息”。
+
+## 数据结构与性能优化
+
+### MySQL 表结构
+
+`user`：用户账号表。
+
+| 字段 | 类型 | 含义 |
+|------|------|------|
+| `user_id` | `VARCHAR` 主键 | 用户唯一 ID。 |
+| `username` | `VARCHAR(50)` 唯一索引 | 登录用户名。 |
+| `email` | `VARCHAR(120)` 唯一索引，可空 | 邮箱和验证码场景使用。 |
+| `password_hash` | `VARCHAR(128)` | bcrypt 密码哈希。 |
+| `created_at` | `VARCHAR` | 用户创建时间。 |
+
+`chatsession`：聊天会话表。
+
+| 字段 | 类型 | 含义 |
+|------|------|------|
+| `session_id` | `VARCHAR` 主键 | 会话唯一 ID。 |
+| `user_id` | `VARCHAR` 索引 | 会话所属用户，用于权限校验和会话列表。 |
+| `timestamp` | `VARCHAR` | 会话创建时间。 |
+
+`chatmessage`：聊天消息表。
+
+| 字段 | 类型 | 含义 |
+|------|------|------|
+| `id` | `VARCHAR` 主键 | 消息唯一 ID。 |
+| `session_id` | `VARCHAR` 索引 | 所属会话 ID。 |
+| `content` | `TEXT` | 用户或 AI 的消息正文。 |
+| `timestamp` | `VARCHAR` | 消息创建时间。 |
+| `message_type` | `VARCHAR(10)` | 消息角色，例如 `user`、`ai`。 |
+| `use_token` | `INTEGER` | 消息 token 估算值。 |
+| `is_summarized` | `BOOLEAN` | 是否已被摘要压缩。 |
+
+`summarymessage`：历史摘要表。
+
+| 字段 | 类型 | 含义 |
+|------|------|------|
+| `summary_id` | `VARCHAR` 主键 | 摘要唯一 ID。 |
+| `session_id` | `VARCHAR` 索引 | 摘要所属会话 ID。 |
+| `summary_content` | `TEXT` | 历史对话摘要内容。 |
+| `timestamp` | `VARCHAR` | 摘要创建时间。 |
+| `token_count` | `INTEGER` | 摘要 token 数。 |
+
+`doc_article`：文档与条文切片映射表。
+
+| 字段 | 类型 | 含义 |
+|------|------|------|
+| `article_id` | `VARCHAR(64)` 主键 | 条文切片 ID，对应 Milvus 向量主键。 |
+| `doc_id` | `VARCHAR(64)` | 文档 ID，用于归组同一文档的切片。 |
+| `doc_abs_path` | `VARCHAR(512)` 索引 | 服务端文档路径，仅后端使用，不返回前端。 |
+| `created_at` | `DATETIME` | 条文切片入库时间。 |
+
+### Redis 与 Milvus 结构
+
+Redis 会话缓存：
+
+| Key | 类型 | 含义 |
+|-----|------|------|
+| `session:{id}:unsummarized` | `List` | 近期未摘要消息，模型上下文直接使用。 |
+| `session:{id}:summarized` | `List` | 已摘要消息备份，供前端展示历史。 |
+| `session:{id}:summary` | `List` | 历史摘要列表。 |
+| `session:{id}:meta` | `Hash` | `total`、`unsum`、`sum` 三类 token 计数。 |
+
+Milvus collection：
+
+| 字段 | 类型 | 含义 |
+|------|------|------|
+| `id` | `VARCHAR` 主键 | 向量 ID，与 `doc_article.article_id` 对应。 |
+| `text` | `VARCHAR` | 条文切片文本。 |
+| `metadata` | `JSON` | 来源、条文号等扩展信息。 |
+| `vector` | `FLOAT_VECTOR` | embedding 向量。 |
+| `filename` | `VARCHAR` | 文档名。 |
+| `article` | `VARCHAR` | 条文编号。 |
+| `start_position` | `INT64` | 切片在原文中的起始位置。 |
+
+### 已落地性能优化
+
+- 会话列表接口将“先查会话、再逐个统计消息数”的 N+1 查询改为一次 `LEFT JOIN + GROUP BY` 聚合查询，减少数据库往返。
+- 历史消息摘要状态从 ORM 对象逐条加载修改，改为批量 `UPDATE chatmessage SET is_summarized = true WHERE id IN (...)`，减少对象加载和内存开销。
+- Redis 缓存近期上下文和摘要 token 计数，降低每轮聊天读取 MySQL 的频率。
+- Token 阈值滑动窗口控制上下文长度，超阈值后对早期对话做摘要压缩。
+- 文档新增、删除、重建时同步刷新 MySQL、Milvus 和 RAG/BM25 缓存，避免旧向量或旧切片残留。
+- SSE 真流式输出让用户先看到模型生成内容，再接收引用证据和校验结果。
+
+### 后续可做优化
+
+- 为 `chatmessage(session_id, timestamp)` 和 `summarymessage(session_id, timestamp)` 增加联合索引，加速上下文恢复和会话详情加载。
+- 将文档元数据从 `doc_article` 中拆成独立文档表，维护 `filename`、`doc_key`、`article_count`，提升文档管理查询效率。
+- 文档名搜索从 `%keyword% LIKE` 升级为 MySQL FULLTEXT 或 Elasticsearch。
+- 深度研究任务状态从内存 job store 升级为 Redis / MySQL 持久任务表，支持服务重启恢复。
+- Milvus 数据规模扩大后，将 `FLAT` 索引升级为 `HNSW` 或 `IVF_FLAT`，通过压测平衡召回率和延迟。
 
 ## 快速开始
 
