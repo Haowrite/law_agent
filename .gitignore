@@ -22,3 +22,5 @@ redis.conf
 test.py
 /test/
 /test/generate_legal_case.py
+.vscode/
+files/backup/
